@@ -70,3 +70,10 @@ python -m wasla.cli reset-password admin@example.com
 ## النسخ والمراقبة في Vercel
 
 التفاصيل في BACKUP_RESTORE_AR.md. فحص Production health دوري كل 15 دقيقة عبر GitHub Actions بعد الدمج؛ يجب أن يراجع المسؤول فشل التشغيل في Actions ويضبط إشعاراته بنفسه. الفحص عام ولا يكشف بيانات العملاء ولا يغطي تأخر الطابور؛ راجع لوحة التشغيل للمعلّق وdead. لا تُعد المراقبة مكتملة دون مسؤول واستجابة مجربة.
+
+
+## إشعارات GitHub للمسؤول الوحيد — إعداد يدوي مطلوب
+- حدد المالك عنوان Gmail لاستلام التنبيهات في هذه المحادثة. **لا نخزن البريد الشخصي في المستودع العام**؛ يعين المالك العنوان داخل حساب GitHub فقط.
+- بعد دمج PR #4 في `main`، تعمل مهمة `.github/workflows/ops-alerts.yml` باسم `Wasla operational alerts`: عند فشل `Production health` أو `Production queue health` أو `PostgreSQL database backup to R2` على `main`، تنشئ Issue مسندًا إلى `ibrahimtwaiti`. تراجع كل 6 ساعات أحدث نجاح للنسخ وتفتح تنبيهًا عند غيابه أو تجاوزه 26 ساعة. لا تكرر المسألة نفسها وهي مفتوحة، ولا تسجل بيانات العملاء أو الأسرار.
+- هذه الآلية **لا ترسل Gmail مباشرة**؛ تعتمد إشعارات البريد على إعدادات GitHub الشخصية: Settings → Emails (إضافة العنوان والتحقق منه)؛ Settings → Notifications (Default notifications email، وتفعيل Participating عبر Email، وSystem → Actions عبر Email، وOnly notify for failed workflows)؛ ثم Watch لمستودع Wasla حسب الحاجة. بعد الدمج افتح Actions → Wasla operational alerts → Run workflow لإنشاء تنبيه تجريبي، ثم تحقق من وصوله إلى البريد المستهدف. أغلق Issue التجريبية بعد تدوين الوقت ودليل الاستلام.
+- إذا لم تصل الرسالة، افحص Spam وإعدادات GitHub Notification Routing، ولا تدّعِ إغلاق بوابة التنبيهات. للمسؤول الواحد أثر تشغيلي مهم عند الغياب؛ يلزم خطة بديل لاحقًا.
