@@ -2,7 +2,7 @@
 
 منصة عربية لتأسيس تشغيل المبيعات: موقع الخدمات، طلبات العروض، مشروعات التنفيذ، مساحات الشركات والعملاء والفرص والمهام. مبنية من الصفر وفق خريطة البناء المرفقة بتاريخ 12 نوفمبر 2026.
 
-**الحالة: إصدار تأسيسي قابل للتشغيل والاختبار. ليس الإطلاق الكامل للمنصة المذكورة في الوثيقة.** لا توجد بيانات أو كلمات مرور افتراضية. لا يوجد نشر إنتاجي أو اتصال مزود فعلي ضمن هذا التسليم.
+**الحالة: إصدار تأسيسي قابل للتشغيل والاختبار. ليس الإطلاق الكامل للمنصة المذكورة في الوثيقة.** لا توجد بيانات أو كلمات مرور افتراضية. يجري تجهيز إصدار Vercel Serverless مع PostgreSQL مستقلة؛ لا يوجد اعتماد إنتاجي أو ربط حقيقي بواتساب حتى الآن.
 
 ## ما يعمل الآن
 
@@ -53,7 +53,7 @@ docker compose up --build -d
 docker compose exec web python -m wasla.cli bootstrap
 ```
 
-المنفذ مكشوف على localhost فقط. ضع TLS reverse proxy أمامه، وحدد `WASLA_ENV=production` و`WASLA_ORIGIN=https://your-actual-domain` للاستخدام خارج الجهاز. **لا تنشر على Vercel أو أي حاوية ذات قرص مؤقت بهذه البنية**؛ يجب خادم واحد ووحدة تخزين دائمة. راجع [دليل التشغيل](docs/OPERATIONS_AR.md).
+المنفذ مكشوف على localhost فقط. ضع TLS reverse proxy أمامه، وحدد `WASLA_ENV=production` و`WASLA_ORIGIN=https://your-actual-domain` للاستخدام خارج الجهاز. عند النشر على Vercel استخدم PostgreSQL على Neon؛ ملفات SQLite المحلية لا تصلح على القرص المؤقت. تعليمات Docker خاصة بخادم ذي قرص دائم. راجع [دليل التشغيل](docs/OPERATIONS_AR.md).
 
 ## الاختبارات
 
@@ -75,3 +75,15 @@ node --check wasla/static/app.js
 - [تحليل النتائج](docs/RESULTS_AR.md)
 
 لا يستخدم المشروع اسم المرجع أو شعاراته أو شهاداته أو إحصاءاته. الشعار النصي والألوان الحالية مؤقتة وقابلة للاستبدال. لا تخزن أسرارًا أو بيانات حقيقية داخل Git.
+
+
+## Vercel + Neon deployment
+
+- Deployment entrypoint: index.py, Python 3.12, FastAPI.
+- Runtime DATABASE_URL is the **Neon pooled** connection; use DATABASE_URL_UNPOOLED only in an operator terminal for migrations (python -m wasla.cli init).
+- Separate Neon production and preview branches; never share customer data with previews.
+- Set WASLA_ENV=production, WASLA_ORIGIN=https://your-domain and encrypted WASLA_WORKER_SECRET (at least 32 characters). Vercel uses the request host for same-origin checks on its own domains.
+- For the initial admin, execute python -m wasla.cli bootstrap from a trusted operator terminal with a direct database connection. The email and password are interactive, not API parameters. There are no default credentials or public setup endpoints.
+- WhatsApp events are persisted before acknowledgment. A Neon scheduled Function must invoke POST /api/internal/drain-webhooks with Authorization: Bearer <secret> every minute. Processing uses PostgreSQL row locks, retries with backoff, and a dead-letter status after five failures. Neither WhatsApp sending nor delivery verification is implemented in V1.
+- Verify SQLite and PostgreSQL CI acceptance, preview HTTP smoke tests and tenant-boundary checks before production promotion.
+- This repository contains no real SQLite database to migrate: the schema is migrated, not customer data. Importing customer data requires an authorized SQLite source backup and a separate controlled process.

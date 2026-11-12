@@ -26,17 +26,19 @@ def process_one():
                         number=phone('+'+msg['from']); stamp=now()
                         contact=one(db,'SELECT * FROM contacts WHERE tenant_id=? AND phone=?',(tid,number))
                         if not contact:
-                            cid=uid(); db.execute('INSERT INTO contacts(id,tenant_id,name,phone,created_at) VALUES(?,?,?,?,?)',(cid,tid,names.get(msg['from'],'عميل واتساب')[:200],number,stamp))
+                            cid=uid(); db.execute('INSERT INTO contacts(id,tenant_id,name,phone,created_at) VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,phone) DO NOTHING',(cid,tid,names.get(msg['from'],'عميل واتساب')[:200],number,stamp))
+                            cid=one(db,'SELECT id FROM contacts WHERE tenant_id=? AND phone=?',(tid,number))['id']
                         else: cid=contact['id']
                         conv=one(db,'SELECT * FROM conversations WHERE channel_id=? AND contact_id=?',(channel['id'],cid))
                         inbound=min(int(msg['timestamp']),int(time.time()))
                         if not conv:
-                            vid=uid(); db.execute('INSERT INTO conversations(id,tenant_id,contact_id,channel_id,last_inbound,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',(vid,tid,cid,channel['id'],inbound,stamp,stamp))
+                            vid=uid(); db.execute('INSERT INTO conversations(id,tenant_id,contact_id,channel_id,last_inbound,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(channel_id,contact_id) DO NOTHING',(vid,tid,cid,channel['id'],inbound,stamp,stamp))
+                            vid=one(db,'SELECT id FROM conversations WHERE channel_id=? AND contact_id=?',(channel['id'],cid))['id']
                         else:
                             vid=conv['id']; db.execute("UPDATE conversations SET status='open',close_reason='',last_inbound=max(last_inbound,?),updated_at=? WHERE id=?",(inbound,stamp,vid))
                         body=msg.get('text',{}).get('body') if msg.get('type')=='text' else '[رسالة غير نصية — المرفقات غير مدعومة في V1]'
                         if not isinstance(body,str): raise ValueError('invalid_message')
-                        db.execute('INSERT INTO messages(id,tenant_id,conversation_id,provider_id,direction,body,status,created_at) VALUES(?,?,?,?,?,?,?,?)',(uid(),tid,vid,msg['id'],'in',body[:4000],'received',stamp))
+                        db.execute('INSERT INTO messages(id,tenant_id,conversation_id,provider_id,direction,body,status,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider_id) DO NOTHING',(uid(),tid,vid,msg['id'],'in',body[:4000],'received',stamp))
             db.execute("UPDATE webhook_events SET status='processed',error='' WHERE id=?",(event_id,))
         return True
     except Exception:
