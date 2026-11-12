@@ -1,98 +1,76 @@
-# النسخ المشفّر إلى Cloudflare R2 والاستعادة — Wasla V1
+# نسخ PostgreSQL إلى Cloudflare R2 واستعادته — Wasla V1
 
-تحديث 13 نوفمبر 2026. اختار المالك R2 بدل GCS. الشفرة والتوثيق جاهزان؛ **لم تُنشأ حاوية أو مفاتيح ولم يُنفذ نسخ أو استعادة إنتاجية بعد**. نسخة Neon الحالية snap-divine-unit-bay7yrah لم تُحذف أو تُعدّل.
+تحديث 13 نوفمبر 2026. **قرار المالك: رفع نسخ PostgreSQL إلى R2 دون تشفير age أو أي تشفير يتحكم المالك بمفتاحه.** تستخدم R2 التشفير على مستوى التخزين لدى Cloudflare، ويستخدم النقل TLS/HTTPS. هذا **ليس** تشفيرًا من طرف إلى طرف: أي شخص لديه صلاحية قراءة R2 يمكنه تنزيل أرشيف قاعدة البيانات وقراءة بياناته. لا يناسب هذا القرار أي سياسة تلزم بتشفير النسخ بمفتاح مستقل.
 
-## التصميم المعتمد للتجهيز
-PostgreSQL المباشر → pg_dump 17 → تشفير age → R2 خاص → تحقق metadata → تنزيل وفك تشفير واستعادة معزولة.
-نستخدم AWS CLI بوصفه عميلًا لبروتوكول S3 المتوافق مع R2؛ التخزين والفوترة لدى Cloudflare، ولا يلزم حساب Amazon أو Google. لا يستخدم المسار WIF/OIDC أو مفاتيح Google.
+## الحالة الحالية (لا تدّعِ نجاح تشغيل حي)
+- حاوية R2 الخاصة `wasla-production-backups` موجودة بفئة Standard، jurisdiction=default وموقع أُبلغ عنه APAC. الوصول العام r2.dev معطّل ولا توجد نطاقات عامة.
+- رمزان مقيدان بالحاوية ظاهران Active في لوحة Cloudflare: `wasla-production-backup-writer` بصلاحية Object Read & Write و`wasla-production-restore-reader` بصلاحية Object Read.
+- تظهر أسماء أسرار GitHub `BACKUP_DATABASE_URL` و`R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` والمتغيرات `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_PREFIX` في بيئة `production-backup`؛ لا يمكن التحقق من قيم الأسرار من صور الشاشة.
+- لم يُدمج PR #4 في `main` بعد. **لم تُرفع نسخة حقيقية ولم تنفذ استعادة R2 حتى الآن.** نسخة Neon الحالية والفرع الإنتاجي لم تُمس.
+- لا توجد قاعدة Bucket Lock مفعّلة حتى آخر فحص. يحتاج المالك اعتماد مدة الاحتفاظ ومكان الإقامة/الولاية القضائية قبل فرض القواعد.
 
-## 1. إنشاء التخزين في لوحة Cloudflare
-1. افتح R2 Object Storage في حساب تملكه، وفعّل الخدمة والفوترة المطلوبة إن لم تكن مفعلة.
-2. أنشئ حاوية مخصصة باسم مثل wasla-production-backups، واختر Standard.
-3. أبقِ Public Development URL / r2.dev معطلًا، ولا تربط Custom Domain عامًا. لا تحتاج CORS للنسخ من GitHub.
-4. اختر Location/Jurisdiction بعد اعتماد مكان حفظ البيانات؛ location hint ليس ضمانًا لإقامة البيانات في دولة بعينها. انسخ S3 API endpoint من لوحة الحاوية بما فيه jurisdiction إن وجد.
-5. اقترح Bucket Lock لمدة 30 يومًا على production/postgres/، وLifecycle لحذف النسخ بعد مدة معتمدة لا تقل عن مدة القفل. لم يُفعّل القفل أو الحذف تلقائيًا. Bucket Lock له أولوية على Lifecycle.
-6. لا ننقل إعداد Versioning أو Soft Delete الخاص بـGCS إلى R2؛ كل نسخة لها اسم زمني وUUID ورفع شرطي يمنع استبدال كائن قائم. القفل هو طبقة الحماية المقترحة من الحذف أثناء الاحتفاظ.
+## البنية
+Neon PostgreSQL 17 production (اتصال Direct) → `pg_dump --format=custom` → ملف مؤقت .dump بصلاحية 0600 على GitHub-hosted runner → Cloudflare R2 خاص عبر S3-compatible API/HTTPS → `HeadObject` وفحص الحجم وSHA256 metadata → استعادة منفصلة معزولة.
 
-## 2. إنشاء مفاتيح R2 بصلاحيات محددة
-من R2 → Manage R2 API Tokens، أنشئ رمزًا مخصصًا لمهمة النسخ:
-- Object Read & Write، مع Apply to specific buckets only واختيار حاوية النسخ فقط. لا تمنح Admin Read & Write.
-- اقرأ حدود الدور: هو ليس Write-only، وقد يتيح حذف الكائنات؛ لذلك لا ندّعي منع الحذف عبر الدور وحده. استخدم Bucket Lock وحسابًا إداريًا منفصلًا وفق سياسة الاحتفاظ المعتمدة.
-- انسخ Access Key ID وSecret Access Key مباشرة إلى GitHub Secrets. الـAPI Token الإداري العام ليس بديلًا لهذين الحقلين.
-- أنشئ رمز استعادة مستقلًا بصلاحية Object Read فقط للحاوية نفسها؛ احتفظ به لدى المشغل ولا تضعه في مهمة النسخ.
-- احتفظ بسجل مالك الرمز وتاريخ تدويره/انتهائه، واختبر البديل قبل إلغاء القديم. لا ترسل الأسرار في المحادثة.
+تستخدم مهمة النسخ `AWS CLI` كبروتوكول فقط؛ التخزين لدى Cloudflare وليس AWS. لا تحتاج GCS أو Google WIF أو age. الأرشيف غير مشفر بمفتاح المستخدم، وتحميه أثناء وجوده محليًا صلاحيات الملف والحاوية المؤقتة والتنظيف بعد انتهاء المهمة. قد يظل معرضًا لمن يحصل على وصول إلى بيئة التشغيل أو حساب Cloudflare: هذا خطر مقبول فقط بقرار المالك.
 
-## 3. إعداد GitHub Environment
-في المستودع: Settings → Environments → production-backup. قيّد Deployment branches إلى main.
+## 1. إعداد الحاوية والمفاتيح
+1. bucket: `wasla-production-backups`، التخزين Standard، وصول عام معطّل دون custom domain.
+2. حساب الكتابة: R2 Account API token `Object Read & Write` مقيد بالحاوية فقط. **ليس write-only**؛ لذا ينبغي حماية الاحتفاظ بـ Bucket Lock عند اعتماد السياسة.
+3. حساب الاستعادة: `Object Read` مقيد بالحاوية نفسها، ومفاتيحه خارج GitHub Actions للنسخ.
+4. المقترح (غير مفعل): Bucket Lock لمدة 30 يومًا على `production/postgres/`. لا تضف Lifecycle Delete قبل اعتماد سياسة الاحتفاظ. ادرس إقامة البيانات لأن default/APAC ليست ضمانًا للإقامة في بلد بعينه.
+5. تجنب مشاركة أي Secret Access Key أو PostgreSQL URL في Git أو المحادثات أو السجلات. راجع صلاحية الرمز ودوّره بجدول موثق.
 
-| الاسم | النوع | القيمة |
-|---|---|---|
-| BACKUP_DATABASE_URL | Secret | اتصال Neon مباشر مع TLS؛ حساب مخصص بصلاحيات القراءة اللازمة لجميع جداول النسخ |
-| R2_ACCESS_KEY_ID | Secret | Access Key ID من رمز R2 |
-| R2_SECRET_ACCESS_KEY | Secret | Secret Access Key من رمز R2 |
-| BACKUP_AGE_RECIPIENT | Variable | مفتاح age العام age1… |
-| R2_ENDPOINT_URL | Variable | https://ACCOUNT_ID.r2.cloudflarestorage.com أو endpoint jurisdiction المنسوخ من Cloudflare |
-| R2_BUCKET | Variable | wasla-production-backups أو اسم الحاوية الفعلي |
+## 2. GitHub Environment: production-backup
+قيد `Deployment branches and tags` إلى `main` فقط. لا تفرض required reviewers على مهمة مجدولة دون آلية موافقة تشغيلية.
+
+| الاسم | النوع | الاستخدام |
+| --- | --- | --- |
+| BACKUP_DATABASE_URL | Secret | اتصال Neon PostgreSQL 17 مباشر مع TLS وقراءة كافة البيانات المطلوبة؛ يفضل مستخدم نسخ محدود |
+| R2_ACCESS_KEY_ID | Secret | Access Key ID للرمز writer |
+| R2_SECRET_ACCESS_KEY | Secret | Secret Access Key للرمز writer |
+| R2_ENDPOINT_URL | Variable | https://cbd764cddd5790396878771139794161.r2.cloudflarestorage.com |
+| R2_BUCKET | Variable | wasla-production-backups |
 | R2_PREFIX | Variable | production/postgres |
 
-لا تحتاج GCP_PROJECT_ID أو WIF أو BACKUP_GCS_PREFIX. لا تحذف إعدادات مشتركة مع مشاريع أخرى. صلاحيات workflow هي contents:read فقط، ولا يحتاج id-token:write.
-إذا فُرضت موافقة بشرية لكل تشغيل للبيئة، سيتوقف النسخ المجدول حتى الموافقة؛ قرر ضوابط البيئة بما يناسب التشغيل الآلي.
+**لا تضف `BACKUP_AGE_RECIPIENT`.** لا تستعمل مفتاح فك التشفير ولا تحتاج `age-keygen`. إذا أُضيف متغير age قديم يمكن تركه غير مستخدم مؤقتًا أو حذفه بعد التحقق من عدم استخدامه في مهام أخرى.
 
-### مفتاح التشفير
-على جهاز المشغل الموثوق: age-keygen -o wasla-backup-identity.txt.
-احفظ المفتاح الخاص في مدير أسرار ونسخة استرداد مستقلة، وضع المفتاح العام فقط في BACKUP_AGE_RECIPIENT. لا تحفظ المفتاح الخاص في GitHub أو الحاوية مع النسخ. لا يعني وجود سر الاتصال أن المفتاح الخاص متاح للاستعادة تلقائيًا.
+## 3. التشغيل والتحقق
+1. بعد نجاح فحوص CI ومراجعة ودمج PR #4، شغّل GitHub → Actions → `PostgreSQL database backup to R2` → Run workflow على `main`. لا يتم تشغيل workflow من فرع PR بواسطة إعدادات job الحالية؛ الملف يجب أن يُدمج أولاً.
+2. يثبت PostgreSQL client 17. يرفض الاتصالات pooled وغير TLS، ويزيل وراثة مفاتيح AWS أخرى قبل الاتصال بـR2.
+3. ينشئ `pg_dump` أرشيفًا مخصصًا `.dump` داخل دليل مؤقت خاص وملف mode 0600. عند فشل dump أو عدم صحة بصمة `PGDMP`، لا يبدأ الرفع. تزال الملفات المؤقتة بعد انتهاء المهمة. تبقى البيانات **غير مشفرة بمفتاح العميل** أثناء وجودها على القرص المؤقت.
+4. يرفع إلى `production/postgres/wasla-<timestamp>-<uuid>.dump` بشرط `If-None-Match: *` لمنع استبدال كائن موجود. اسم الملف فريد. يرفض الأرشيف الفارغ أو الأكبر من 5 GiB (يتطلب الأكبر Multipart بدعم عدم الاستبدال قبل الاعتماد).
+5. بعد الرفع، يفحص HeadObject الحجم وmetadata SHA256 ويفشل المهمة عند الاختلاف. هذا ليس بديلًا عن التنزيل والاستعادة؛ metadata وحدها ليست إثباتًا ضد تعديل مهاجم يملك صلاحيات كتابة.
+6. احفظ اسم الكائن، توقيت بدء النسخ، SHA256، ورابط تشغيل Actions. لا ترفع dump أو سجلًا محتويًا على بيانات حساسة كـ artifact.
 
-## 4. التشغيل الأول والتحقق
-1. بعد نجاح CI ومراجعة ودمج الشفرة، شغّل Encrypted database backup على main يدويًا. الجدولة لا تعمل لمجرد وجود الملف على فرع PR.
-2. يفحص workflow الإعدادات وتوفر AWS CLI الداعم لـIfNoneMatch، ويثبت age وpg_dump 17.
-3. النسخة تمر مباشرة من pg_dump إلى age؛ لا تُكتب نسخة plaintext على القرص.
-4. يُرفع ملف مشفر باسم زمني مع UUID إلى R2 عبر HTTPS. PutObject مع If-None-Match:* يرفض استبدال كائن موجود، وليس مجرد اختبار وجود سابق قابل للتسابق.
-5. يفحص HeadObject حجم الملف وmetadata SHA256. أي فشل يفشل المهمة دون رسالة نجاح. هذا ليس تنزيلًا مستقلًا أو تجربة استعادة.
-6. احتفظ باسم الملف ووقت النسخ وبصمته ورابط تشغيل Actions. يتطلب قياس RPO تسجيل بداية أخذ النسخة، وليس وقت انتهاء الرفع فقط.
-
-**حد V1:** المسار يستخدم PutObject واحدًا لملفات غير فارغة حتى 5 GiB. يرفض الأكبر صراحة؛ إذا اقترب الحجم من هذا الحد نضيف multipart مع شرط عدم الاستبدال والتحقق المناسب قبل الاعتماد. لا يستخدم أعلام SSE/ACL غير المدعومة في R2؛ age يوفر تشفيرًا قبل الرفع.
-
-## 5. اختبار الاستعادة
-يستخدم المشغل رمز R2 للقراءة ومفتاح age الخاص على جهاز موثوق. جميع الأسرار تُحقن في البيئة دون طباعتها أو وضعها في arguments. لا تستخدم بيئة Preview العامة لبيانات الإنتاج.
-
-1. أنشئ قاعدة PostgreSQL 17 فارغة ومعزولة، بلا DNS عام أو مجدولات أو تكاملات إرسال. تحقق يدويًا من هوية الهدف وأنه ليس الإنتاج.
-2. افتح مجلدًا خاصًا (umask 077). اضبط AWS_ACCESS_KEY_ID وAWS_SECRET_ACCESS_KEY برمز الاستعادة، AWS_DEFAULT_REGION=auto، وR2_ENDPOINT_URL بالقيمة المعتمدة؛ أزل أي AWS_SESSION_TOKEN/Profile قديم لا يخص هذه المهمة.
-3. نزّل الملف المشفر المحدد:
-
+## 4. تجربة الاستعادة الإلزامية (ليس على الإنتاج)
+1. أنشئ قاعدة PostgreSQL 17 جديدة فارغة ومعزولة كليًا عن الإنتاج، دون webhooks/رسائل/مجدولات أو شبكة عامة. تحقق من وجهة الاتصال قبل أي أمر استعادة.
+2. على جهاز مشغل موثوق، ضع `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_OBJECT_KEY` في متغيرات البيئة، واضبط `AWS_ACCESS_KEY_ID` و`AWS_SECRET_ACCESS_KEY` برمز **الاستعادة Object Read** فقط، و`AWS_DEFAULT_REGION=auto`. لا تستخدم ملف AWS profile مشتركًا.
+3. قيّد صلاحيات المجلد المحلي قبل التنزيل، ثم:
 ```bash
+umask 077
 aws --endpoint-url "$R2_ENDPOINT_URL" --region auto s3api get-object \
-  --bucket "$R2_BUCKET" --key "$R2_OBJECT_KEY" backup.dump.age
-sha256sum backup.dump.age
-age -d -i wasla-backup-identity.txt -o restore.dump backup.dump.age
+  --bucket "$R2_BUCKET" --key "$R2_OBJECT_KEY" restore.dump
+sha256sum restore.dump
 pg_restore --list restore.dump
 ```
-
-4. طابق SHA256 مع تشغيل النسخ المحفوظ. metadata وحدها ليست توقيعًا مستقلاً ضد التلاعب. نجاح فك age جزء من تحقق سلامة المحتوى.
-5. اضبط PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD/PGSSLMODE للهدف المعزول. PGDATABASE اسم قاعدة وليس URL. ثم:
-
+4. طابق SHA256 مع القيمة المسجلة في سجل النسخ؛ افحص مخطط الأرشيف. لا تحتاج فك تشفير age.
+5. بعد ضبط بيئة اتصال الهدف المعزول فقط (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, PGSSLMODE):
 ```bash
 pg_restore --exit-on-error --no-owner --no-acl --dbname="$PGDATABASE" restore.dump
 ```
+6. تحقق من المخطط والجداول والقيود وعدد السجلات وعزل الشركات وتشغيل التطبيق المعزول. لا تُنفذ رسائل أو webhooks أو Jobs خارجية. سجّل RPO وRTO وزمن الاستعادة.
+7. احذف ملفات الأرشيف المؤقت من بيئة الاستعادة بعد التحقق، واحتفظ بتقرير النتائج لا بكلمة المرور أو بيانات العملاء.
 
-6. طابق المخطط والترحيلات والقيود والجداول وأعداد السجلات مع نقطة النسخ. العدد السابق 19 جدولًا مرجع تاريخي وليس ثابتًا إذا تغير المخطط. إذا استمرت الكتابة في الإنتاج، لا تقارن بعداد حالي؛ جهز بيانًا متسقًا مع snapshot النسخ أو نافذة توقف كتابة معتمدة.
-7. شغّل التطبيق على القاعدة المعزولة واختبر القراءة والأدوار وعزل الشركات ورحلة قبول. لا تشغّل Webhooks أو رسائل خارجية أو مهام موروثة. تطبيق الجلسات المستعادة يجب أن يبقى ضمن البيئة المعزولة؛ تدويرها عند تعافٍ حقيقي إجراء منفصل.
-8. سجّل وقت البداية والنهاية وحالة الاختبارات وأي فرق، وامسح plaintext المؤقت بعد الاختبار مع الاحتفاظ بالتقرير والنسخة المشفرة.
+## 5. الاعتماد والمتابعة
+- الجدول المقترح يوميًا 00:17 UTC = 03:17 بتوقيت الرياض؛ جدولة GitHub best-effort، وقد تتأخر.
+- اعتمد متلقي تنبيه عند فشل مهمة النسخ أو تجاوز عمر آخر نسخة ناجحة 24 ساعة؛ اختبر استلام التنبيه.
+- أهداف مقترحة: RPO ≤24h وRTO ≤4h بعد قياسهما عمليًا.
+- لا تغلق بوابة V1 قبل أول رفع حي واستعادة معزولة ناجحة واختبار مراقبة. لا تغيّر snapshots Neon أو فرع الإنتاج لهذا الاختبار.
+- خيار عدم تشفير age يسهّل الاستعادة، **لكنه يقلّل العزل الأمني**؛ أعد تقييمه قبل تخزين بيانات عملاء حقيقية أو معلومات حساسة.
 
-## 6. الاعتماد والتشغيل
-- الجدول المقترح الموجود: يوميًا 00:17 UTC / 03:17 الرياض. GitHub scheduling best effort.
-- عيّن مسؤولًا وتنبيهًا لفشل النسخ ولتجاوز عمر آخر نسخة ناجحة 24 ساعة؛ لا يُعتبر البريد وصل دون اختبار استلام.
-- أهداف مقترحة تحتاج قياسًا: RPO ≤24 ساعة، RTO ≤4 ساعات. إعادة اختبار استعادة شهريًا وبعد تغييرات المخطط الجوهرية.
-- لا يُغلق المانع قبل إثبات أول رفع وتنزيل وفك تشفير واستعادة وتشغيل معزول وتنبيه.
-- نسخة Neon الحالية تبقى كما هي. لا حذف أو تدوير snapshots في هذا المسار.
-
-## التراجع عن التطبيق
-سجل آخر نشر سليم. حزمة الإغلاق لا تغير مخطط البيانات. rollback للتطبيق لا يعني استعادة قاعدة الإنتاج. لا تُجرّب الاستعادة فوق الإنتاج.
-
-## المراجع
-- https://developers.cloudflare.com/r2/get-started/cli/
-- https://developers.cloudflare.com/r2/get-started/s3/
-- https://developers.cloudflare.com/r2/api/s3/api/
+## مراجع
+- https://developers.cloudflare.com/r2/how-r2-works/
+- https://developers.cloudflare.com/r2/api/tokens/
 - https://developers.cloudflare.com/r2/buckets/bucket-locks/
-
-## الحالة الفعلية
-تجهيز برمجي واختبارات محاكاة فقط. يلزم حساب Cloudflare وحاوية خاصة ومفتاحا وصول داخل GitHub ومفتاح age محفوظ. لا توجد أداة إدارة R2 متصلة في هذه الجلسة؛ لم ندّعِ إنشاء تخزين أو اختبار استعادة حي.
+- https://developers.cloudflare.com/r2/api/s3/api/
