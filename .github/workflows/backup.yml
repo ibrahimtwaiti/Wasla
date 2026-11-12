@@ -1,4 +1,4 @@
-name: Encrypted database backup
+name: PostgreSQL database backup to R2
 on:
   workflow_dispatch:
   schedule:
@@ -21,7 +21,6 @@ jobs:
       - name: Verify required settings without revealing them
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
-          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX }}
@@ -30,23 +29,23 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          from scripts.backup_postgres import r2_settings
-          required = ['BACKUP_DATABASE_URL','BACKUP_AGE_RECIPIENT','R2_ENDPOINT_URL','R2_BUCKET','R2_PREFIX','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']
+          from scripts.backup_postgres import database_env, r2_settings
+          required = ['BACKUP_DATABASE_URL','R2_ENDPOINT_URL','R2_BUCKET','R2_PREFIX','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']
           missing = [key for key in required if not os.environ.get(key)]
           if missing: raise SystemExit('Backup not configured: ' + ', '.join(missing))
+          database_env(os.environ['BACKUP_DATABASE_URL'])
           r2_settings()
           PY
-      - name: Install encryption and matching database client
+      - name: Install matching PostgreSQL client
         run: |
           sudo apt-get update
-          sudo apt-get install -y age postgresql-client-17
+          sudo apt-get install -y postgresql-client-17
           pg_dump --version
           aws --version
           AWS_PAGER='' aws s3api put-object --generate-cli-skeleton input | python -c 'import json,sys; assert "IfNoneMatch" in json.load(sys.stdin), "AWS CLI must support conditional PutObject"'
-      - name: Encrypt, upload and verify R2 metadata
+      - name: Dump database, upload to private R2 and verify metadata
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
-          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX }}
