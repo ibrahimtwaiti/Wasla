@@ -6,5 +6,9 @@
   "scripts": {
     "dev": "python -m scripts.dev",
     "check": "node --check wasla/static/app.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "acorn": "^8.15.0"
   }
 }

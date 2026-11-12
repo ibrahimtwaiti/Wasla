@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
+from .catalog_en import SERVICES_EN, CONSENT_EN
 from . import brand
 
 STATIC=Path(__file__).parent/'static'
@@ -128,11 +129,14 @@ def health():
     return {'status':'ok','version':'1.0.0'}
 
 @app.get('/api/catalog')
-def catalog():
+def catalog(lang: str = "ar"):
     with transaction() as db:
         content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
         identity=brand.read(db)
-    return {'services':SERVICES,'consent':CONSENT,'content':content,'brand':identity}
+        ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
+    if lang=='en':
+        content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en','')}
+    return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'brand':identity,'request_ready':ready}
 
 @app.get('/api/brand.css')
 def brand_styles():
@@ -172,6 +176,28 @@ def submit_request(data:dict,request:Request):
         db.execute('INSERT INTO notifications VALUES(?,?,?,?,0,?)',(uid(),owner['id'],'طلب خدمة جديد '+reference,ident,stamp))
         db.execute('INSERT INTO audit VALUES(?,NULL,NULL,?,?,?,?)',(uid(),'request.created',ident,'consent:v1',stamp))
     return {'reference':reference}
+
+@app.post('/api/auth/setup',status_code=201)
+def first_provider(data:dict,request:Request):
+    # Capability is random, expires, and is useless as soon as a provider exists.
+    with transaction() as db:
+        limit(db,'setup:'+digest(request.client.host),10,900)
+    expected=os.getenv('WASLA_SETUP_TOKEN','')
+    supplied=data.get('token','')
+    try: expires=int(os.getenv('WASLA_SETUP_EXPIRES','0'))
+    except ValueError: expires=0
+    if len(expected)<40 or not isinstance(supplied,str) or not hmac.compare_digest(supplied,expected) or time.time()>expires:
+        raise HTTPException(403,'رابط التفعيل غير صالح أو انتهت صلاحيته')
+    address=email(text(data,'email')); name=text(data,'name',2,100)
+    encoded=hash_password(text(data,'password',12,128))
+    with transaction() as db:
+        if postgres(): db.execute("SELECT pg_advisory_xact_lock(hashtext('wasla-first-provider'))")
+        if one(db,"SELECT id FROM users WHERE role='provider' LIMIT 1"):
+            raise HTTPException(409,'تم تفعيل حساب الإدارة مسبقًا')
+        ident=uid()
+        db.execute('INSERT INTO users VALUES(?,NULL,?,?,?,?,1,?)',(ident,address,name,encoded,'provider',now()))
+        audit(db,{'id':ident,'tenant_id':None},'provider.initialized',ident)
+    return {'ok':True}
 
 @app.post('/api/auth/login')
 def login(data:dict,request:Request,response:Response):
@@ -259,7 +285,7 @@ def tenant_status(ident:str,data:dict,u=Depends(user)):
 
 @app.put('/api/admin/content')
 def content_update(data:dict,u=Depends(user)):
-    provider(u); key=choice(data,'key',{'about','contact_email','contact_phone','working_hours'})
+    provider(u); key=choice(data,'key',{'about','about_en','contact_email','contact_phone','working_hours','working_hours_en'})
     value=text(data,'value',0,4000)
     if key=='contact_email': value=email(value)
     if key=='contact_phone' and value: value=phone(value)

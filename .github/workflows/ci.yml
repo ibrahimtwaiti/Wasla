@@ -72,3 +72,27 @@ jobs:
           python -m scripts.import_sqlite_to_postgres --source /tmp/wasla-import-source.sqlite3 --target-database wasla_import_test --apply
           count="$(psql -h localhost -U wasla_test -d wasla_import_test -At -c 'SELECT count(*) FROM tenants;')"
           test "$count" = 1
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: pip install -r requirements.txt
+      - run: npm ci
+      - run: node scripts/i18n/check.cjs
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-report
+          path: |
+            playwright-report/
+            test-results/
