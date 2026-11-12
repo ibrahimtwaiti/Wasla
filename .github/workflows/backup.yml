@@ -13,9 +13,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
     environment: production-backup
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -25,33 +22,34 @@ jobs:
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
-          BACKUP_GCS_PREFIX: ${{ vars.BACKUP_GCS_PREFIX }}
-          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          GCP_BACKUP_SERVICE_ACCOUNT: ${{ vars.GCP_BACKUP_SERVICE_ACCOUNT }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           python - <<'PY'
           import os
-          required = ['BACKUP_DATABASE_URL','BACKUP_AGE_RECIPIENT','BACKUP_GCS_PREFIX','GCP_PROJECT_ID','GCP_WORKLOAD_IDENTITY_PROVIDER','GCP_BACKUP_SERVICE_ACCOUNT']
+          from scripts.backup_postgres import r2_settings
+          required = ['BACKUP_DATABASE_URL','BACKUP_AGE_RECIPIENT','R2_ENDPOINT_URL','R2_BUCKET','R2_PREFIX','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']
           missing = [key for key in required if not os.environ.get(key)]
           if missing: raise SystemExit('Backup not configured: ' + ', '.join(missing))
+          r2_settings()
           PY
       - name: Install encryption and matching database client
         run: |
           sudo apt-get update
           sudo apt-get install -y age postgresql-client-17
           pg_dump --version
-      - name: Authenticate to Google Cloud with short-lived credentials
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_BACKUP_SERVICE_ACCOUNT }}
-          create_credentials_file: true
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
-      - name: Encrypt and upload to GCS
+          aws --version
+          AWS_PAGER='' aws s3api put-object --generate-cli-skeleton input | python -c 'import json,sys; assert "IfNoneMatch" in json.load(sys.stdin), "AWS CLI must support conditional PutObject"'
+      - name: Encrypt, upload and verify R2 metadata
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
-          BACKUP_GCS_PREFIX: ${{ vars.BACKUP_GCS_PREFIX }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python scripts/backup_postgres.py
