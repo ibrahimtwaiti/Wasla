@@ -106,7 +106,7 @@ def open_issues():
 def create_once(alert):
     key, title, body = alert
     marker = "<!-- wasla-ops-alert:" + key + " -->"
-    if any(marker in issue.get("body", "") for issue in open_issues()):
+    if any(marker in (issue.get("body") or "") for issue in open_issues()):
         print("Alert already open:", key)
         return False
     api("POST", "issues", {
