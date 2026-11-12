@@ -28,8 +28,9 @@
 - [x] PostgreSQL schema and constraints on both branches.
 - [x] GitHub Actions SQLite and PostgreSQL acceptance tests.
 - [x] Preview HTTP health/catalog and website smoke test.
-- [ ] Preview scheduler trigger observed processing a synthetic webhook.
-- [ ] Production security and domain checks.
-- [ ] Provider admin initialized interactively by the owner.
+- [x] Production scheduler observed processing a synthetic empty webhook on 2026-11-12 at 16:21 UTC; no customer data created.
+- [x] Production security, public domain, database health and asset checks passed.
+- [ ] Owner action: activate the private one-use setup link and choose administrator credentials.
 - [ ] Real WhatsApp business account end-to-end verification.
-- [ ] External encrypted database backup and restore exercise.
+- [x] Neon snapshot restoration and schema/data checks before launch.
+- [ ] External encrypted backup / recurring snapshot schedule: not configured; Neon reports scheduled snapshots are not enabled for this project.
