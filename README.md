@@ -2,7 +2,7 @@
 
 منصة عربية لتأسيس تشغيل المبيعات: موقع الخدمات، طلبات العروض، مشروعات التنفيذ، مساحات الشركات والعملاء والفرص والمهام. مبنية من الصفر وفق خريطة البناء المرفقة بتاريخ 12 نوفمبر 2026.
 
-**الحالة: إصدار تأسيسي قابل للتشغيل والاختبار. ليس الإطلاق الكامل للمنصة المذكورة في الوثيقة.** لا توجد بيانات أو كلمات مرور افتراضية. يجري تجهيز إصدار Vercel Serverless مع PostgreSQL مستقلة؛ لا يوجد اعتماد إنتاجي أو ربط حقيقي بواتساب حتى الآن.
+**الحالة: إصدار تأسيسي قابل للتشغيل والاختبار. ليس الإطلاق الكامل للمنصة المذكورة في الوثيقة.** لا توجد بيانات أو كلمات مرور افتراضية. التطبيق منشور على Vercel مع PostgreSQL مستقلة على Neon. الاعتماد النهائي مشروط بإغلاق بوابات التشغيل في docs/V1_CLOSEOUT_AR.md؛ لا يوجد ربط إرسال حقيقي بواتساب.
 
 ## ما يعمل الآن
 
@@ -20,7 +20,7 @@
 
 **الإرسال الخارجي لواتساب غير منفذ في V1**؛ endpoint يرفضه ولا يسجل نجاحًا وهميًا. الاستقبال منفذ ومختبر بأحداث اصطناعية، لكنه يحتاج حساب Meta وإعدادًا واختبارًا حقيقيًا. القناة تظل `unverified`.
 
-المساعد الذكي، محرر البوت، القوالب والحملات، الدفع والفواتير والاشتراكات التفصيلية، الدعوات البريدية، MFA، رفع المرفقات/المخرجات، استيراد CSV ودمج العملاء وتكاملات سلة وزد وCRM غير مشمولة في V1. واجهة الإنجليزية غير منفذة. راجع [مصفوفة النطاق](docs/V1_SCOPE_AR.md) قبل تقييم المطابقة للوثيقة الكاملة.
+المساعد الذكي، محرر البوت، القوالب والحملات، الدفع والفواتير والاشتراكات التفصيلية، الدعوات البريدية، MFA، رفع المرفقات/المخرجات، استيراد CSV ودمج العملاء وتكاملات سلة وزد وCRM غير مشمولة في V1. واجهة الإنجليزية منفذة ومختبرة بجانب العربية. راجع [مصفوفة النطاق](docs/V1_SCOPE_AR.md) قبل تقييم المطابقة للوثيقة الكاملة.
 
 ## تشغيل سريع — Python 3.12+
 
@@ -97,3 +97,7 @@ node --check wasla/static/app.js
 ### Import authorized SQLite V1 data (optional)
 
 Prepare a **consistent offline SQLite backup**, not a live database file. Review source table counts first with python -m scripts.import_sqlite_to_postgres --source /path/to/backup.sqlite3. Set DATABASE_URL_UNPOOLED to the dedicated Neon PostgreSQL **direct** connection, run python -m wasla.cli init, then explicitly import with python -m scripts.import_sqlite_to_postgres --source /path/to/backup.sqlite3 --target-database wasla --apply. The target database must be empty. This is an atomic import with record-count verification and rollback on errors. Existing sessions and rate-limit counters are never copied; logins are required again.
+
+## إغلاق V1
+
+راجع [تقرير الإغلاق ومصفوفة القبول](docs/V1_CLOSEOUT_AR.md) و[النسخ المشفر والاستعادة](docs/BACKUP_RESTORE_AR.md). وجود ملفات التشغيل لا يعني أن الأسرار والجدولة والوجهة الخارجية قد تم تفعيلها.
