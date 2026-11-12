@@ -1,5 +1,6 @@
-"""Transactional storage for a single-node V1 pilot; never use an ephemeral disk."""
+"""SQLite local storage; PostgreSQL storage for serverless deployments."""
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -17,22 +18,79 @@ def uid():
 def path():
     return os.environ.get('WASLA_DB', str(ROOT / 'data/wasla.sqlite3'))
 
+def pg_url():
+    return os.environ.get('DATABASE_URL') or os.environ.get('WASLA_DATABASE_URL')
+
+def postgres():
+    return bool(pg_url())
+
+class PgRow(dict):
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+def _pg_row(cursor):
+    columns = [column.name for column in (cursor.description or ())]
+    def factory(values):
+        return PgRow(zip(columns, values))
+    return factory
+
+def _pg_sql(sql):
+    # SQL is internally authored, never user controlled. Parameters stay bound.
+    sql = sql.replace('?', '%s')
+    sql = re.sub(r'\bIS %s\b', 'IS NOT DISTINCT FROM %s', sql)
+    sql = sql.replace('max(last_inbound,%s)', 'GREATEST(last_inbound,%s)')
+    return sql
+
+class PgAdapter:
+    def __init__(self, connection):
+        self.connection = connection
+    def execute(self, sql, args=()):
+        return self.connection.execute(_pg_sql(sql), args)
+
 @contextmanager
 def transaction():
-    db = sqlite3.connect(path(), timeout=15)
-    db.row_factory = sqlite3.Row
-    db.execute('PRAGMA foreign_keys=ON')
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    if postgres():
+        import psycopg
+        with psycopg.connect(pg_url(), connect_timeout=10, prepare_threshold=None,
+                             row_factory=_pg_row) as conn:
+            with conn.transaction():
+                yield PgAdapter(conn)
+    else:
+        db = sqlite3.connect(path(), timeout=15)
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA foreign_keys=ON')
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+def migrate():
+    # Never migrate automatically inside Vercel requests.
+    if not postgres():
+        return initialize()
+    import psycopg
+    direct = os.environ.get('DATABASE_URL_UNPOOLED') or pg_url()
+    script = (ROOT / 'migrations/002_postgres.sql').read_text()
+    with psycopg.connect(direct, connect_timeout=15, prepare_threshold=None) as conn:
+        with conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext('wasla-schema-v1'))")
+            for statement in script.split(';'):
+                if statement.strip():
+                    conn.execute(statement)
 
 def initialize():
+    if postgres():
+        with transaction() as db:
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=1'):
+                raise RuntimeError('PostgreSQL migrations missing: python -m wasla.cli init')
+        return
     Path(path()).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path()) as db:
         db.execute('PRAGMA journal_mode=WAL')

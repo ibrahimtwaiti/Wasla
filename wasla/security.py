@@ -42,4 +42,4 @@ def limit(db, key, maximum=10, seconds=600):
     record=db.execute('SELECT count FROM rate_limits WHERE key=?',(key,)).fetchone()
     if record and record[0]>=maximum:
         raise HTTPException(429,'طلبات كثيرة؛ يرجى المحاولة لاحقًا')
-    db.execute('INSERT INTO rate_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1', (key,current+seconds))
+    db.execute('INSERT INTO rate_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=rate_limits.count+excluded.count', (key,current+seconds))

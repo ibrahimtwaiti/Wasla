@@ -1,3 +1,4 @@
+import html
 import csv
 import hashlib
 import hmac
@@ -7,16 +8,19 @@ import os
 import re
 import secrets
 import sqlite3
+import psycopg
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from .db import initialize, transaction, one, rows, audit, now, uid
+from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
+from .catalog_en import SERVICES_EN, CONSENT_EN
+from . import brand
 
 STATIC=Path(__file__).parent/'static'
 REQUEST_STATES={'new','review','information','quoted','accepted','rejected','closed'}
@@ -34,10 +38,10 @@ app=FastAPI(title='Wasla API',version='1.0.0',lifespan=lifespan,docs_url=None,re
 @app.middleware('http')
 async def protect(request, call_next):
     if request.method in {'POST','PATCH','PUT','DELETE'}:
-        if len(await request.body())>65536:
+        if len(await request.body())>(2200000 if request.url.path=='/api/admin/brand' else 65536):
             return JSONResponse({'detail':'حجم الطلب أكبر من المسموح'},413)
-        if not request.url.path.startswith('/api/webhooks/'):
-            origin=os.getenv('WASLA_ORIGIN','http://localhost:8000')
+        if not (request.url.path.startswith('/api/webhooks/') or request.url.path == '/api/internal/drain-webhooks'):
+            origin=('https://' + request.headers.get('host','') if os.getenv('VERCEL_ENV') in ('preview','production') else os.getenv('WASLA_ORIGIN','http://localhost:8000'))
             if request.headers.get('origin')!=origin:
                 return JSONResponse({'detail':'مصدر الطلب غير مسموح'},403)
             if 'application/json' not in request.headers.get('content-type',''):
@@ -52,6 +56,7 @@ async def protect(request, call_next):
     if os.getenv('WASLA_ENV')=='production': response.headers['Strict-Transport-Security']='max-age=31536000'
     return response
 
+@app.exception_handler(psycopg.IntegrityError)
 @app.exception_handler(sqlite3.IntegrityError)
 async def integrity_error(request, exc):
     return JSONResponse({'detail':'السجل مكرر أو مرتبط ببيانات غير صالحة'},409)
@@ -125,9 +130,29 @@ def health():
     return {'status':'ok','version':'1.0.0'}
 
 @app.get('/api/catalog')
-def catalog():
-    with transaction() as db: content={r['key']:r['value'] for r in db.execute('SELECT * FROM content')}
-    return {'services':SERVICES,'consent':CONSENT,'content':content}
+def catalog(lang: str = "ar"):
+    with transaction() as db:
+        content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
+        identity=brand.read(db)
+        ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
+    original_content=content.copy()
+    if lang=='en':
+        content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en',''),'privacy':content.get('privacy_en',''),'terms':content.get('terms_en','')}
+    return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'content_original':original_content,'brand':identity,'request_ready':ready}
+
+@app.get('/api/brand.css')
+def brand_styles():
+    with transaction() as db: identity=brand.read(db)
+    return Response(brand.css(identity),media_type='text/css',headers={'Cache-Control':'no-store'})
+
+@app.put('/api/admin/brand')
+def brand_update(data:dict,u=Depends(user)):
+    provider(u)
+    identity=brand.validate(data)
+    with transaction() as db:
+        db.execute('INSERT INTO content VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',('brand',json.dumps(identity),now()))
+        audit(db,u,'brand.updated','brand')
+    return {'ok':True,'brand':identity}
 
 @app.post('/api/requests',status_code=201)
 def submit_request(data:dict,request:Request):
@@ -153,6 +178,32 @@ def submit_request(data:dict,request:Request):
         db.execute('INSERT INTO notifications VALUES(?,?,?,?,0,?)',(uid(),owner['id'],'طلب خدمة جديد '+reference,ident,stamp))
         db.execute('INSERT INTO audit VALUES(?,NULL,NULL,?,?,?,?)',(uid(),'request.created',ident,'consent:v1',stamp))
     return {'reference':reference}
+
+@app.post('/api/auth/setup',status_code=201)
+def first_provider(data:dict,request:Request):
+    # Capability is random, expires, and is useless as soon as a provider exists.
+    with transaction() as db:
+        limit(db,'setup:'+digest(request.client.host),10,900)
+    expected=os.getenv('WASLA_SETUP_TOKEN','')
+    supplied=data.get('token','')
+    try: expires=int(os.getenv('WASLA_SETUP_EXPIRES','0'))
+    except ValueError: expires=0
+    if len(expected)<40 or not isinstance(supplied,str) or not hmac.compare_digest(supplied,expected) or time.time()>expires:
+        raise HTTPException(403,'رابط التفعيل غير صالح أو انتهت صلاحيته')
+    address=email(text(data,'email')); name=text(data,'name',2,100)
+    encoded=hash_password(text(data,'password',12,128))
+    entity=text(data,'legal_entity',2,160)
+    contact=email(text(data,'contact_email'))
+    with transaction() as db:
+        if postgres(): db.execute("SELECT pg_advisory_xact_lock(hashtext('wasla-first-provider'))")
+        if one(db,"SELECT id FROM users WHERE role='provider' LIMIT 1"):
+            raise HTTPException(409,'تم تفعيل حساب الإدارة مسبقًا')
+        ident=uid()
+        db.execute('INSERT INTO users VALUES(?,NULL,?,?,?,?,1,?)',(ident,address,name,encoded,'provider',now()))
+        audit(db,{'id':ident,'tenant_id':None},'provider.initialized',ident)
+        for key,value in [('legal_entity',entity),('contact_email',contact)]:
+            db.execute('INSERT INTO content VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',(key,value,now()))
+    return {'ok':True}
 
 @app.post('/api/auth/login')
 def login(data:dict,request:Request,response:Response):
@@ -240,7 +291,7 @@ def tenant_status(ident:str,data:dict,u=Depends(user)):
 
 @app.put('/api/admin/content')
 def content_update(data:dict,u=Depends(user)):
-    provider(u); key=choice(data,'key',{'about','contact_email','contact_phone','working_hours'})
+    provider(u); key=choice(data,'key',{'about','about_en','contact_email','contact_phone','working_hours','working_hours_en','legal_entity','privacy','privacy_en','terms','terms_en'})
     value=text(data,'value',0,4000)
     if key=='contact_email': value=email(value)
     if key=='contact_phone' and value: value=phone(value)
@@ -254,7 +305,7 @@ def project_list(u=Depends(user)):
     if u['role']!='provider': permit(u,'projects')
     with transaction() as db:
         projects=rows(db,'SELECT * FROM projects'+(' WHERE tenant_id=?' if u['tenant_id'] else '')+' ORDER BY created_at DESC', (u['tenant_id'],) if u['tenant_id'] else ())
-        for p in projects: p['milestones']=rows(db,'SELECT * FROM milestones WHERE project_id=? ORDER BY rowid',(p['id'],))
+        for p in projects: p['milestones']=rows(db,'SELECT * FROM milestones WHERE project_id=? ORDER BY updated_at,id',(p['id'],))
         return projects
 
 @app.patch('/api/projects/{ident}')
@@ -419,7 +470,7 @@ def retry_event(ident:str,u=Depends(user)):
     with transaction() as db:
         r=one(db,"SELECT id FROM webhook_events WHERE id=? AND status='dead'",(ident,))
         if not r: raise HTTPException(404,'الحدث غير موجود في قائمة المراجعة')
-        db.execute("UPDATE webhook_events SET status='pending',attempts=0,error='' WHERE id=?",(ident,))
+        db.execute("UPDATE webhook_events SET status='pending',attempts=0,error=''"+(",next_attempt_at=0" if postgres() else "")+" WHERE id=?",(ident,))
         audit(db,u,'webhook.retry',ident)
     return {'ok':True}
 
@@ -483,6 +534,14 @@ def channel_create(data:dict,u=Depends(user)):
         db.execute('INSERT INTO channels(id,tenant_id,phone_id,token_env) VALUES(?,?,?,?)',(ident,u['tenant_id'],phone_id,'')); audit(db,u,'channel.registered',ident)
     return {'id':ident,'status':'unverified'}
 
+@app.post('/api/internal/drain-webhooks')
+def drain_webhooks(request:Request):
+    secret=os.environ.get('WASLA_WORKER_SECRET','')
+    if len(secret)<32 or not hmac.compare_digest(request.headers.get('Authorization',''),'Bearer '+secret):
+        raise HTTPException(401,'Unauthorized')
+    from .worker import drain
+    return {'processed':drain(max_events=20,max_seconds=20)}
+
 @app.get('/api/webhooks/whatsapp')
 def verify_webhook(request:Request):
     expected=os.getenv('META_VERIFY_TOKEN',''); q=request.query_params
@@ -500,12 +559,31 @@ async def receive_webhook(request:Request):
         if not isinstance(payload,dict) or payload.get('object')!='whatsapp_business_account' or not isinstance(payload.get('entry'),list): raise ValueError()
     except (ValueError,TypeError): raise HTTPException(400,'Invalid payload')
     with transaction() as db:
-        db.execute('INSERT OR IGNORE INTO webhook_events(id,payload,created_at) VALUES(?,?,?)',(hashlib.sha256(raw).hexdigest(),raw.decode(),now()))
+        db.execute('INSERT INTO webhook_events(id,payload,created_at) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',(hashlib.sha256(raw).hexdigest(),raw.decode(),now()))
     return {'received':True}
 
-app.mount('/static',StaticFiles(directory=STATIC),name='static')
+@app.get('/robots.txt',response_class=PlainTextResponse)
+def robots():
+    origin=os.getenv('WASLA_ORIGIN','').rstrip('/')
+    return 'User-agent: *\nDisallow: /app\nDisallow: /api/\nDisallow: /setup\nDisallow: /login\n'+('Sitemap: '+origin+'/sitemap.xml\n' if origin.startswith('https://') else '')
+
+@app.get('/sitemap.xml')
+def sitemap():
+    origin=os.getenv('WASLA_ORIGIN','').rstrip('/')
+    paths=['/','/services','/platform','/how-it-works','/about','/faq','/request','/privacy','/terms']+['/services/'+s['id'] for s in SERVICES]
+    urls=''.join('<url><loc>'+html.escape(origin+p+suffix)+'</loc></url>' for p in paths for suffix in ['', '?lang=en'])
+    return Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls+'</urlset>',media_type='application/xml')
+
+app.mount('/static' ,StaticFiles(directory=STATIC),name='static')
 
 @app.get('/{path:path}')
-def shell(path:str):
+def shell(path:str,request:Request):
     if path.startswith('api/'): raise HTTPException(404,'المسار غير موجود')
-    return FileResponse(STATIC/'index.html')
+    lang=request.query_params.get('lang',request.cookies.get('wasla_lang','ar'))
+    en=lang=='en'; source=(STATIC/'index.html').read_text()
+    if en:
+        source=source.replace('lang="ar" dir="rtl"','lang="en" dir="ltr"').replace('وصلة | Wasla','Wasla | Connected sales and teams').replace('جارٍ تحميل وصلة…','Loading Wasla…').replace('انتقل للمحتوى','Skip to content')
+    private=path.startswith('app') or path in {'login','setup'}
+    known=path in {'','services','platform','how-it-works','about','faq','pricing','privacy','terms','request','login','setup'} or path.startswith('app/') or path=='app' or path in {'services/'+s['id'] for s in SERVICES}
+    if private or not known: source=source.replace('</head>','<meta name="robots" content="noindex,nofollow"></head>')
+    return HTMLResponse(source,status_code=200 if known else 404,headers={'Cache-Control':'no-store','Vary':'Cookie'})

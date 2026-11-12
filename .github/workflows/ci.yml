@@ -20,3 +20,80 @@ jobs:
       - run: python -m compileall -q wasla scripts
       - run: node --check wasla/static/app.js
       - run: python -m unittest discover -s tests -v
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: wasla_test
+          POSTGRES_USER: wasla_test
+          POSTGRES_PASSWORD: ci-disposable-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wasla_test -d wasla_test"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Migrations, PostgreSQL acceptance, isolation and concurrent worker
+        env:
+          DATABASE_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
+          DATABASE_URL_UNPOOLED: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
+          WASLA_TEST_DATABASE_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
+        run: |
+          python -m wasla.cli init
+          python -m unittest discover -s tests -p 'test_postgres.py' -v
+
+      - name: Exercise atomic SQLite to PostgreSQL import
+        env:
+          PGPASSWORD: ci-disposable-only
+        run: |
+          psql -h localhost -U wasla_test -d wasla_test -c 'CREATE DATABASE wasla_import_test;'
+          python - <<'PY'
+          import os
+          os.environ.pop('DATABASE_URL', None)
+          os.environ['WASLA_DB'] = '/tmp/wasla-import-source.sqlite3'
+          from wasla.db import initialize, transaction, now
+          initialize()
+          with transaction() as db:
+              db.execute('INSERT INTO tenants(id,name,created_at) VALUES(?,?,?)',('import-tenant','Import CI',now()))
+          PY
+          DATABASE_URL=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          DATABASE_URL_UNPOOLED=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          python -m wasla.cli init
+          DATABASE_URL_UNPOOLED=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          python -m scripts.import_sqlite_to_postgres --source /tmp/wasla-import-source.sqlite3 --target-database wasla_import_test --apply
+          count="$(psql -h localhost -U wasla_test -d wasla_import_test -At -c 'SELECT count(*) FROM tenants;')"
+          test "$count" = 1
+
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: pip install -r requirements.txt
+      - run: npm ci
+      - run: node scripts/i18n/check.cjs
+      - run: node --test tests/test_worker_trigger.cjs
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-report
+          path: |
+            playwright-report/
+            test-results/
