@@ -50,3 +50,25 @@ jobs:
         run: |
           python -m wasla.cli init
           python -m unittest discover -s tests -p 'test_postgres.py' -v
+
+      - name: Exercise atomic SQLite to PostgreSQL import
+        env:
+          PGPASSWORD: ci-disposable-only
+        run: |
+          psql -h localhost -U wasla_test -d wasla_test -c 'CREATE DATABASE wasla_import_test;'
+          python - <<'PY'
+          import os
+          os.environ.pop('DATABASE_URL', None)
+          os.environ['WASLA_DB'] = '/tmp/wasla-import-source.sqlite3'
+          from wasla.db import initialize, transaction, now
+          initialize()
+          with transaction() as db:
+              db.execute('INSERT INTO tenants(id,name,created_at) VALUES(?,?,?)',('import-tenant','Import CI',now()))
+          PY
+          DATABASE_URL=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          DATABASE_URL_UNPOOLED=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          python -m wasla.cli init
+          DATABASE_URL_UNPOOLED=postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_import_test \
+          python -m scripts.import_sqlite_to_postgres --source /tmp/wasla-import-source.sqlite3 --target-database wasla_import_test --apply
+          count="$(psql -h localhost -U wasla_test -d wasla_import_test -At -c 'SELECT count(*) FROM tenants;')"
+          test "$count" = 1

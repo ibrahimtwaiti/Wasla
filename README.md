@@ -87,3 +87,8 @@ node --check wasla/static/app.js
 - WhatsApp events are persisted before acknowledgment. A Neon scheduled Function must invoke POST /api/internal/drain-webhooks with Authorization: Bearer <secret> every minute. Processing uses PostgreSQL row locks, retries with backoff, and a dead-letter status after five failures. Neither WhatsApp sending nor delivery verification is implemented in V1.
 - Verify SQLite and PostgreSQL CI acceptance, preview HTTP smoke tests and tenant-boundary checks before production promotion.
 - This repository contains no real SQLite database to migrate: the schema is migrated, not customer data. Importing customer data requires an authorized SQLite source backup and a separate controlled process.
+
+
+### Import authorized SQLite V1 data (optional)
+
+Prepare a **consistent offline SQLite backup**, not a live database file. Review source table counts first with python -m scripts.import_sqlite_to_postgres --source /path/to/backup.sqlite3. Set DATABASE_URL_UNPOOLED to the dedicated Neon PostgreSQL **direct** connection, run python -m wasla.cli init, then explicitly import with python -m scripts.import_sqlite_to_postgres --source /path/to/backup.sqlite3 --target-database wasla --apply. The target database must be empty. This is an atomic import with record-count verification and rollback on errors. Existing sessions and rate-limit counters are never copied; logins are required again.
