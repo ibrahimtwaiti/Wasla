@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
+from . import brand
 
 STATIC=Path(__file__).parent/'static'
 REQUEST_STATES={'new','review','information','quoted','accepted','rejected','closed'}
@@ -35,7 +36,7 @@ app=FastAPI(title='Wasla API',version='1.0.0',lifespan=lifespan,docs_url=None,re
 @app.middleware('http')
 async def protect(request, call_next):
     if request.method in {'POST','PATCH','PUT','DELETE'}:
-        if len(await request.body())>65536:
+        if len(await request.body())>(2200000 if request.url.path=='/api/admin/brand' else 65536):
             return JSONResponse({'detail':'حجم الطلب أكبر من المسموح'},413)
         if not (request.url.path.startswith('/api/webhooks/') or request.url.path == '/api/internal/drain-webhooks'):
             origin=('https://' + request.headers.get('host','') if os.getenv('VERCEL_ENV') in ('preview','production') else os.getenv('WASLA_ORIGIN','http://localhost:8000'))
@@ -128,8 +129,24 @@ def health():
 
 @app.get('/api/catalog')
 def catalog():
-    with transaction() as db: content={r['key']:r['value'] for r in db.execute('SELECT * FROM content')}
-    return {'services':SERVICES,'consent':CONSENT,'content':content}
+    with transaction() as db:
+        content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
+        identity=brand.read(db)
+    return {'services':SERVICES,'consent':CONSENT,'content':content,'brand':identity}
+
+@app.get('/api/brand.css')
+def brand_styles():
+    with transaction() as db: identity=brand.read(db)
+    return Response(brand.css(identity),media_type='text/css',headers={'Cache-Control':'no-store'})
+
+@app.put('/api/admin/brand')
+def brand_update(data:dict,u=Depends(user)):
+    provider(u)
+    identity=brand.validate(data)
+    with transaction() as db:
+        db.execute('INSERT INTO content VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',('brand',json.dumps(identity),now()))
+        audit(db,u,'brand.updated','brand')
+    return {'ok':True,'brand':identity}
 
 @app.post('/api/requests',status_code=201)
 def submit_request(data:dict,request:Request):
