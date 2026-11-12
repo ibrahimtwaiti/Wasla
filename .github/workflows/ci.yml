@@ -87,6 +87,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: npm ci
       - run: node scripts/i18n/check.cjs
+      - run: node --test tests/test_worker_trigger.cjs
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: npx playwright test
       - uses: actions/upload-artifact@v4

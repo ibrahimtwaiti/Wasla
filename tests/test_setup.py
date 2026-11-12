@@ -39,3 +39,10 @@ class SetupAcceptance(unittest.TestCase):
         self.assertEqual([s['id'] for s in ar['services']],[s['id'] for s in en['services']])
         self.assertEqual(en['services'][0]['name'],'WhatsApp sales management')
         self.assertIn('not enabled in V1',en['services'][3]['limit'])
+
+    def test_private_routes_not_indexed_and_unknown_returns_404(self):
+        self.assertIn('noindex,nofollow',self.client.get('/setup').text)
+        self.assertIn('lang="en" dir="ltr"',self.client.get('/?lang=en').text)
+        self.assertEqual(self.client.get('/missing-page').status_code,404)
+        self.assertIn('Disallow: /api/',self.client.get('/robots.txt').text)
+        self.assertIn('/services/crm',self.client.get('/sitemap.xml').text)

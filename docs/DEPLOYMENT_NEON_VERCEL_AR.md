@@ -13,7 +13,7 @@
 - WASLA_WORKER_SECRET (minimum 32 chars) is an independently generated secret stored only in Vercel and the Neon Function environment; never in Git.
 - To reach an SSO-protected preview, the Neon scheduler uses a Vercel automation bypass secret. This secret is only for the server-to-server scheduler and must be kept private; rotate on suspicion of disclosure.
 - GET /api/health is a live database health check.
-- Use a trusted operator terminal and an unpooled Neon connection to invoke python -m wasla.cli bootstrap. The email and password are entered interactively; bootstrap cannot be invoked through public HTTP.
+- Use a trusted operator terminal and an unpooled Neon connection to invoke python -m wasla.cli bootstrap. The email and password are entered interactively; The optional /setup flow requires an expiring random capability and refuses once any provider exists; see PRODUCTION_RELEASE_AR.md.
 - Configure separate webhook Meta secrets only after obtaining a real authorized Meta app. Send is intentionally disabled in V1.
 
 ## Durable event processing

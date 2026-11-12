@@ -1,37 +1,21 @@
-// Neon Function Trigger worker: no public unauthenticated processing.
-// This function schedules the protected Wasla Python worker on Vercel.
-// Secrets are injected through Neon Functions environment settings.
+// Trigger-only entry point. Neon strips forged x-neon-* headers at its edge.
+import { parseTriggerDelivery } from '@neon/functions/triggers';
 export default {
   async fetch(request) {
-    if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-    if (!request.headers.get("x-neon-trigger-invocation-id")) {
-      return new Response("scheduled triggers only", { status: 403 });
-    }
-    const url = process.env.WASLA_WORKER_URL;
-    const secret = process.env.WASLA_WORKER_SECRET;
-    const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-    if (!url || !url.startsWith("https://") || !secret || secret.length < 32 || !bypass) {
-      return new Response("worker configuration incomplete", { status: 503 });
-    }
-    try {
-      const result = await fetch(url, {
-        method: "POST",
-        headers: {
-          "authorization": "Bearer " + secret,
-          "x-vercel-protection-bypass": bypass,
-          "content-type": "application/json",
-        },
-        body: "{}",
-        signal: AbortSignal.timeout(25000),
-      });
-      if (!result.ok) return new Response("worker returned " + result.status, { status: 502 });
-      // The application holds the row lock and handles retries/idempotency.
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    } catch (error) {
-      return new Response("worker unavailable; pending events stay in database", { status: 502 });
-    }
-  },
+    if (request.method !== 'POST') return new Response('method not allowed', {status:405});
+    const parsed=await parseTriggerDelivery(request);
+    if(!parsed.ok)return new Response(parsed.error,{status:parsed.error==='invalid_body'?400:401});
+    if(parsed.invocation.type!=='schedule')return new Response('schedule required',{status:400});
+    const url=process.env.WASLA_WORKER_URL,secret=process.env.WASLA_WORKER_SECRET;
+    if(!url?.startsWith('https://')||!secret||secret.length<32)return new Response('worker configuration incomplete',{status:503});
+    const headers={'authorization':'Bearer '+secret,'content-type':'application/json'};
+    if(process.env.VERCEL_AUTOMATION_BYPASS_SECRET)headers['x-vercel-protection-bypass']=process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    try{
+      const result=await fetch(url,{method:'POST',headers,body:'{}',redirect:'error',signal:AbortSignal.timeout(25000)});
+      if(!result.ok){console.error('worker status',result.status);return new Response('worker unavailable',{status:502})}
+      const data=await result.json();
+      console.info('wasla worker tick',JSON.stringify({ok:true,processed:data.processed??0}));
+      return Response.json({ok:true});
+    }catch{console.error('worker unavailable');return new Response('pending events remain queued',{status:502})}
+  }
 };

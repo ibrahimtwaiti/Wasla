@@ -81,3 +81,13 @@ class PostgreSQLAcceptance(unittest.TestCase):
     def test_job_auth_without_secret(self):
         with TestClient(app) as c:
             self.assertEqual(c.post('/api/internal/drain-webhooks').status_code,401)
+    def test_first_provider_concurrent_activation(self):
+        from unittest.mock import patch
+        from time import time
+        with patch.dict(os.environ,{'WASLA_SETUP_TOKEN':'p'*48,'WASLA_SETUP_EXPIRES':str(int(time())+600)}):
+            data={'token':'p'*48,'name':'PG Owner','email':'pg-owner@example.test','password':self.password,'legal_entity':'PG Test','contact_email':'public@example.test'}
+            def activate(_):
+                with TestClient(app) as client:
+                    return client.post('/api/auth/setup',json=data,headers={'Origin':'http://localhost:8000'}).status_code
+            with ThreadPoolExecutor(2) as pool: codes=list(pool.map(activate,range(2)))
+            self.assertEqual(sorted(codes),[201,409])

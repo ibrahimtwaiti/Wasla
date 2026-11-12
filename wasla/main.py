@@ -135,9 +135,10 @@ def catalog(lang: str = "ar"):
         content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
         identity=brand.read(db)
         ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
+    original_content=content.copy()
     if lang=='en':
         content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en',''),'privacy':content.get('privacy_en',''),'terms':content.get('terms_en','')}
-    return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'brand':identity,'request_ready':ready}
+    return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'content_original':original_content,'brand':identity,'request_ready':ready}
 
 @app.get('/api/brand.css')
 def brand_styles():
