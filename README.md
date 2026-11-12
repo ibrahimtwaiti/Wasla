@@ -100,4 +100,4 @@ Prepare a **consistent offline SQLite backup**, not a live database file. Review
 
 ## إغلاق V1
 
-راجع [تقرير الإغلاق ومصفوفة القبول](docs/V1_CLOSEOUT_AR.md) و[النسخ المشفر والاستعادة](docs/BACKUP_RESTORE_AR.md). وجود ملفات التشغيل لا يعني أن الأسرار والجدولة والوجهة الخارجية قد تم تفعيلها.
+راجع [تقرير الإغلاق ومصفوفة القبول](docs/V1_CLOSEOUT_AR.md) و[النسخ إلى R2 دون تشفير age والاستعادة](docs/BACKUP_RESTORE_AR.md). وجود ملفات التشغيل لا يعني أن الأسرار والجدولة والوجهة الخارجية قد تم تفعيلها.
