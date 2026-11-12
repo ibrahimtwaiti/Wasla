@@ -1,0 +1,10 @@
+{
+  "name": "wasla-v1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Development launcher only; frontend has no npm runtime dependencies",
+  "scripts": {
+    "dev": "python -m scripts.dev",
+    "check": "node --check wasla/static/app.js"
+  }
+}

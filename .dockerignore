@@ -1,0 +1,7 @@
+.git
+.env
+.preview-origin
+data
+artifacts
+__pycache__
+*.sqlite*

@@ -1,0 +1,29 @@
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      WASLA_DB: /data/wasla.sqlite3
+      WASLA_ENV: ${WASLA_ENV:-development}
+      WASLA_ORIGIN: ${WASLA_ORIGIN:-http://localhost:8000}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+    volumes:
+      - wasla-data:/data
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["python", "-m", "wasla.worker"]
+    environment:
+      WASLA_DB: /data/wasla.sqlite3
+    volumes:
+      - wasla-data:/data
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+volumes:
+  wasla-data:
