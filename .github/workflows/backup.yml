@@ -13,6 +13,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     environment: production-backup
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -22,14 +25,14 @@ jobs:
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
-          BACKUP_S3_PREFIX: ${{ vars.BACKUP_S3_PREFIX }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          BACKUP_GCS_PREFIX: ${{ vars.BACKUP_GCS_PREFIX }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_BACKUP_SERVICE_ACCOUNT: ${{ vars.GCP_BACKUP_SERVICE_ACCOUNT }}
         run: |
           python - <<'PY'
           import os
-          required = ['BACKUP_DATABASE_URL','BACKUP_AGE_RECIPIENT','BACKUP_S3_PREFIX','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_DEFAULT_REGION']
+          required = ['BACKUP_DATABASE_URL','BACKUP_AGE_RECIPIENT','BACKUP_GCS_PREFIX','GCP_PROJECT_ID','GCP_WORKLOAD_IDENTITY_PROVIDER','GCP_BACKUP_SERVICE_ACCOUNT']
           missing = [key for key in required if not os.environ.get(key)]
           if missing: raise SystemExit('Backup not configured: ' + ', '.join(missing))
           PY
@@ -38,12 +41,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y age postgresql-client-17
           pg_dump --version
-      - name: Encrypt and upload
+      - name: Authenticate to Google Cloud with short-lived credentials
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BACKUP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Encrypt and upload to GCS
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
-          BACKUP_S3_PREFIX: ${{ vars.BACKUP_S3_PREFIX }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          BACKUP_GCS_PREFIX: ${{ vars.BACKUP_GCS_PREFIX }}
         run: python scripts/backup_postgres.py
