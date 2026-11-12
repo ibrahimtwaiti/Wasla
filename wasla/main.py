@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import psycopg
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -14,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from .db import initialize, transaction, one, rows, audit, now, uid
+from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
 
@@ -36,8 +37,8 @@ async def protect(request, call_next):
     if request.method in {'POST','PATCH','PUT','DELETE'}:
         if len(await request.body())>65536:
             return JSONResponse({'detail':'حجم الطلب أكبر من المسموح'},413)
-        if not request.url.path.startswith('/api/webhooks/'):
-            origin=os.getenv('WASLA_ORIGIN','http://localhost:8000')
+        if not (request.url.path.startswith('/api/webhooks/') or request.url.path == '/api/internal/drain-webhooks'):
+            origin=('https://' + request.headers.get('host','') if os.getenv('VERCEL_ENV') in ('preview','production') else os.getenv('WASLA_ORIGIN','http://localhost:8000'))
             if request.headers.get('origin')!=origin:
                 return JSONResponse({'detail':'مصدر الطلب غير مسموح'},403)
             if 'application/json' not in request.headers.get('content-type',''):
@@ -52,6 +53,7 @@ async def protect(request, call_next):
     if os.getenv('WASLA_ENV')=='production': response.headers['Strict-Transport-Security']='max-age=31536000'
     return response
 
+@app.exception_handler(psycopg.IntegrityError)
 @app.exception_handler(sqlite3.IntegrityError)
 async def integrity_error(request, exc):
     return JSONResponse({'detail':'السجل مكرر أو مرتبط ببيانات غير صالحة'},409)
@@ -254,7 +256,7 @@ def project_list(u=Depends(user)):
     if u['role']!='provider': permit(u,'projects')
     with transaction() as db:
         projects=rows(db,'SELECT * FROM projects'+(' WHERE tenant_id=?' if u['tenant_id'] else '')+' ORDER BY created_at DESC', (u['tenant_id'],) if u['tenant_id'] else ())
-        for p in projects: p['milestones']=rows(db,'SELECT * FROM milestones WHERE project_id=? ORDER BY rowid',(p['id'],))
+        for p in projects: p['milestones']=rows(db,'SELECT * FROM milestones WHERE project_id=? ORDER BY updated_at,id',(p['id'],))
         return projects
 
 @app.patch('/api/projects/{ident}')
@@ -419,7 +421,7 @@ def retry_event(ident:str,u=Depends(user)):
     with transaction() as db:
         r=one(db,"SELECT id FROM webhook_events WHERE id=? AND status='dead'",(ident,))
         if not r: raise HTTPException(404,'الحدث غير موجود في قائمة المراجعة')
-        db.execute("UPDATE webhook_events SET status='pending',attempts=0,error='' WHERE id=?",(ident,))
+        db.execute("UPDATE webhook_events SET status='pending',attempts=0,error=''"+(",next_attempt_at=0" if postgres() else "")+" WHERE id=?",(ident,))
         audit(db,u,'webhook.retry',ident)
     return {'ok':True}
 
@@ -483,6 +485,14 @@ def channel_create(data:dict,u=Depends(user)):
         db.execute('INSERT INTO channels(id,tenant_id,phone_id,token_env) VALUES(?,?,?,?)',(ident,u['tenant_id'],phone_id,'')); audit(db,u,'channel.registered',ident)
     return {'id':ident,'status':'unverified'}
 
+@app.post('/api/internal/drain-webhooks')
+def drain_webhooks(request:Request):
+    secret=os.environ.get('WASLA_WORKER_SECRET','')
+    if len(secret)<32 or not hmac.compare_digest(request.headers.get('Authorization',''),'Bearer '+secret):
+        raise HTTPException(401,'Unauthorized')
+    from .worker import drain
+    return {'processed':drain(max_events=20,max_seconds=20)}
+
 @app.get('/api/webhooks/whatsapp')
 def verify_webhook(request:Request):
     expected=os.getenv('META_VERIFY_TOKEN',''); q=request.query_params
@@ -500,7 +510,7 @@ async def receive_webhook(request:Request):
         if not isinstance(payload,dict) or payload.get('object')!='whatsapp_business_account' or not isinstance(payload.get('entry'),list): raise ValueError()
     except (ValueError,TypeError): raise HTTPException(400,'Invalid payload')
     with transaction() as db:
-        db.execute('INSERT OR IGNORE INTO webhook_events(id,payload,created_at) VALUES(?,?,?)',(hashlib.sha256(raw).hexdigest(),raw.decode(),now()))
+        db.execute('INSERT INTO webhook_events(id,payload,created_at) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',(hashlib.sha256(raw).hexdigest(),raw.decode(),now()))
     return {'received':True}
 
 app.mount('/static',StaticFiles(directory=STATIC),name='static')

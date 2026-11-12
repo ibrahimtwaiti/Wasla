@@ -1,8 +1,8 @@
-"""Operator commands; secrets are entered interactively, never command arguments."""
+"""Operator commands; passwords are entered interactively, never via HTTP."""
 import argparse
 import getpass
 import sqlite3
-from .db import initialize, transaction, uid, now, path
+from .db import initialize, migrate, transaction, uid, now, path, postgres
 from .security import hash_password
 
 p=argparse.ArgumentParser()
@@ -13,20 +13,29 @@ b=sub.add_parser('backup'); b.add_argument('destination')
 r=sub.add_parser('reset-password'); r.add_argument('email')
 
 def main():
-    args=p.parse_args(); initialize()
-    if args.command=='init': print('Database migrated.')
-    elif args.command=='backup':
-        with sqlite3.connect(path()) as src, sqlite3.connect(args.destination) as dst: src.backup(dst)
-        print('Consistent backup created. Encrypt and store off-host before retention cleanup.')
+    args=p.parse_args()
+    if args.command=='init':
+        migrate()
+        print('Database schema migrated.')
+        return
+    initialize()
+    if args.command=='backup':
+        if postgres():
+            raise SystemExit('Use pg_dump with a direct PostgreSQL connection and encrypted offsite backup; SQLite backup is disabled for PostgreSQL.')
+        with sqlite3.connect(path()) as src, sqlite3.connect(args.destination) as dst:
+            src.backup(dst)
+        print('Consistent backup created. Encrypt and store off-host.')
     elif args.command=='bootstrap':
-        email=input('Provider admin email: ').strip().lower()
+        address=input('Provider admin email: ').strip().lower()
         name=input('Display name: ').strip()
-        if '@' not in email or not name: raise SystemExit('Valid email and name required')
+        if '@' not in address or not name:
+            raise SystemExit('Valid email and name required')
         password=hash_password(getpass.getpass('Password (12+ characters): '))
         with transaction() as db:
-            if db.execute("SELECT 1 FROM users WHERE role='provider'").fetchone(): raise SystemExit('Provider already exists')
-            db.execute('INSERT INTO users VALUES(?,?,?,?,?,?,1,?)',(uid(),None,email,name,password,'provider',now()))
-        print('Provider admin created. No default credentials are supplied.')
+            if db.execute("SELECT 1 FROM users WHERE role='provider'").fetchone():
+                raise SystemExit('Provider already exists')
+            db.execute('INSERT INTO users VALUES(?,?,?,?,?,?,1,?)',(uid(),None,address,name,password,'provider',now()))
+        print('Provider admin created; no default credentials.')
     elif args.command=='reset-password':
         password=hash_password(getpass.getpass('New password: '))
         with transaction() as db:
