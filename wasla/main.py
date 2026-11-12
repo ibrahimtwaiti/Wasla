@@ -1,3 +1,4 @@
+import html
 import csv
 import hashlib
 import hmac
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
@@ -135,7 +136,7 @@ def catalog(lang: str = "ar"):
         identity=brand.read(db)
         ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
     if lang=='en':
-        content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en','')}
+        content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en',''),'privacy':content.get('privacy_en',''),'terms':content.get('terms_en','')}
     return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'brand':identity,'request_ready':ready}
 
 @app.get('/api/brand.css')
@@ -190,6 +191,8 @@ def first_provider(data:dict,request:Request):
         raise HTTPException(403,'رابط التفعيل غير صالح أو انتهت صلاحيته')
     address=email(text(data,'email')); name=text(data,'name',2,100)
     encoded=hash_password(text(data,'password',12,128))
+    entity=text(data,'legal_entity',2,160)
+    contact=email(text(data,'contact_email'))
     with transaction() as db:
         if postgres(): db.execute("SELECT pg_advisory_xact_lock(hashtext('wasla-first-provider'))")
         if one(db,"SELECT id FROM users WHERE role='provider' LIMIT 1"):
@@ -197,6 +200,8 @@ def first_provider(data:dict,request:Request):
         ident=uid()
         db.execute('INSERT INTO users VALUES(?,NULL,?,?,?,?,1,?)',(ident,address,name,encoded,'provider',now()))
         audit(db,{'id':ident,'tenant_id':None},'provider.initialized',ident)
+        for key,value in [('legal_entity',entity),('contact_email',contact)]:
+            db.execute('INSERT INTO content VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',(key,value,now()))
     return {'ok':True}
 
 @app.post('/api/auth/login')
@@ -285,7 +290,7 @@ def tenant_status(ident:str,data:dict,u=Depends(user)):
 
 @app.put('/api/admin/content')
 def content_update(data:dict,u=Depends(user)):
-    provider(u); key=choice(data,'key',{'about','about_en','contact_email','contact_phone','working_hours','working_hours_en'})
+    provider(u); key=choice(data,'key',{'about','about_en','contact_email','contact_phone','working_hours','working_hours_en','legal_entity','privacy','privacy_en','terms','terms_en'})
     value=text(data,'value',0,4000)
     if key=='contact_email': value=email(value)
     if key=='contact_phone' and value: value=phone(value)
@@ -556,9 +561,28 @@ async def receive_webhook(request:Request):
         db.execute('INSERT INTO webhook_events(id,payload,created_at) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',(hashlib.sha256(raw).hexdigest(),raw.decode(),now()))
     return {'received':True}
 
-app.mount('/static',StaticFiles(directory=STATIC),name='static')
+@app.get('/robots.txt',response_class=PlainTextResponse)
+def robots():
+    origin=os.getenv('WASLA_ORIGIN','').rstrip('/')
+    return 'User-agent: *\nDisallow: /app\nDisallow: /api/\nDisallow: /setup\nDisallow: /login\n'+('Sitemap: '+origin+'/sitemap.xml\n' if origin.startswith('https://') else '')
+
+@app.get('/sitemap.xml')
+def sitemap():
+    origin=os.getenv('WASLA_ORIGIN','').rstrip('/')
+    paths=['/','/services','/platform','/how-it-works','/about','/faq','/request','/privacy','/terms']+['/services/'+s['id'] for s in SERVICES]
+    urls=''.join('<url><loc>'+html.escape(origin+p+suffix)+'</loc></url>' for p in paths for suffix in ['', '?lang=en'])
+    return Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls+'</urlset>',media_type='application/xml')
+
+app.mount('/static' ,StaticFiles(directory=STATIC),name='static')
 
 @app.get('/{path:path}')
-def shell(path:str):
+def shell(path:str,request:Request):
     if path.startswith('api/'): raise HTTPException(404,'المسار غير موجود')
-    return FileResponse(STATIC/'index.html')
+    lang=request.query_params.get('lang',request.cookies.get('wasla_lang','ar'))
+    en=lang=='en'; source=(STATIC/'index.html').read_text()
+    if en:
+        source=source.replace('lang="ar" dir="rtl"','lang="en" dir="ltr"').replace('وصلة | Wasla','Wasla | Connected sales and teams').replace('جارٍ تحميل وصلة…','Loading Wasla…').replace('انتقل للمحتوى','Skip to content')
+    private=path.startswith('app') or path in {'login','setup'}
+    known=path in {'','services','platform','how-it-works','about','faq','pricing','privacy','terms','request','login','setup'} or path.startswith('app/') or path=='app' or path in {'services/'+s['id'] for s in SERVICES}
+    if private or not known: source=source.replace('</head>','<meta name="robots" content="noindex,nofollow"></head>')
+    return HTMLResponse(source,status_code=200 if known else 404,headers={'Cache-Control':'no-store','Vary':'Cookie'})

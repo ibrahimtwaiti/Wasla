@@ -12,7 +12,7 @@ class SetupAcceptance(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         self.env=patch.dict(os.environ,{'WASLA_DB':self.tmp.name+'/setup.sqlite3','WASLA_ENV':'development','WASLA_ORIGIN':'http://testserver','WASLA_SETUP_TOKEN':'s'*48,'WASLA_SETUP_EXPIRES':str(int(time.time())+600)})
         self.env.start();self.client=TestClient(app);self.client.__enter__();self.client.headers['Origin']='http://testserver'
-        self.data={'token':'s'*48,'name':'Owner','email':'owner@example.test','password':'private-test-password'}
+        self.data={'token':'s'*48,'name':'Owner','email':'owner@example.test','password':'private-test-password','legal_entity':'QA Entity','contact_email':'contact@example.test'}
     def tearDown(self):
         self.client.__exit__(None,None,None);self.env.stop();self.tmp.cleanup()
     def test_setup_activates_requests_and_login_once(self):
