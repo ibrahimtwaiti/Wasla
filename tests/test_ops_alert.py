@@ -45,7 +45,7 @@ class OpsAlertTests(unittest.TestCase):
     def test_manual_test_issue_is_distinct(self):
         alert = ops_alert.alert_from_event({}, "workflow_dispatch")
         self.assertEqual(alert[0], "test")
-        self.assertIn("اختبار", alert[1])
+        self.assertIn("تجربة", alert[1])
 
     def test_backup_age_fresh(self):
         started = self.now - timedelta(hours=25)
