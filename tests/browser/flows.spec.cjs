@@ -24,7 +24,7 @@ test('provider identity persists and protected UI is usable',async({page})=>{
  await page.goto('/app/content?lang=en');await expect(page.locator('#brand-form')).toBeVisible();
  await page.locator('#brand-form [name=primary]').fill('#7650cc');await page.locator('#brand-form button[type=submit]').click();await expect(page.locator('#toast')).toBeVisible();
  await page.reload();await expect(page.locator('#brand-form [name=primary]')).toHaveValue('#7650cc');
- await page.locator('#brand-form [name=primary]').fill('#834DFB');await page.locator('#brand-form button[type=submit]').click();await expect(page.locator('#toast')).toBeVisible();
+ await page.locator('#brand-form [name=primary]').fill('#834dfb');await page.locator('#brand-form button[type=submit]').click();await expect(page.locator('#toast')).toBeVisible();
 });
 test('reduced motion leaves all sections visible',async({page})=>{
  await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/');await expect(page.locator('.brand-hero')).toBeVisible();expect(await page.locator('.reveal-ready').count()).toBe(0);
