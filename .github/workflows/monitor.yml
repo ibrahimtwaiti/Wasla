@@ -1,6 +1,10 @@
 name: Production health
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/monitor.yml
   schedule:
     - cron: '8,23,38,53 * * * *'
 permissions:
@@ -21,3 +25,8 @@ jobs:
           python-version: '3.12'
       - run: pip install httpx==0.28.1
       - run: python -m scripts.smoke_production https://wasla-olive.vercel.app
+      - name: Safe one-time monitor alert delivery drill
+        if: github.event_name == 'push'
+        run: |
+          echo "INTENTIONAL TEST FAILURE: verifying GitHub operational alert chain. This does not change Wasla production."
+          exit 1
