@@ -79,6 +79,11 @@ class OpsAlertTests(unittest.TestCase):
             self.assertIn("<!-- wasla-ops-alert:backup-overdue -->", payload["body"])
             self.assertNotIn("@gmail.com", payload["body"])
 
+    def test_initial_deployment_push_creates_test_alert(self):
+        alert = ops_alert.alert_from_event({}, "push")
+        self.assertEqual(alert[0], "test")
+        self.assertIn("[Wasla TEST]", alert[1])
+
 
 if __name__ == "__main__":
     unittest.main()
