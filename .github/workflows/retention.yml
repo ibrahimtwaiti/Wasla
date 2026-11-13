@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/retention.yml
+      - scripts/retention_cleanup.py
   schedule:
     - cron: '17 1 * * *'
 permissions:
