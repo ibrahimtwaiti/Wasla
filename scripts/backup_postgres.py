@@ -35,7 +35,9 @@ def failure_classification(stderr, stage):
         ]
     else:
         categories = [
-            (('accessdenied', 'forbidden', '403', 'invalidaccesskeyid', 'signaturedoesnotmatch'), 'R2_AUTH'),
+            (('invalidaccesskeyid', 'invalid access key id'), 'R2_ACCESS_KEY_UNRECOGNIZED'),
+            (('signaturedoesnotmatch', 'signature mismatch'), 'R2_SECRET_MISMATCH'),
+            (('accessdenied', 'forbidden', '403'), 'R2_ACCESS_DENIED'),
             (('could not connect', 'connection timed out', 'connect timeout', 'endpointconnectionerror'), 'R2_NETWORK'),
             (('preconditionfailed', '412'), 'R2_OBJECT_ALREADY_EXISTS'),
             (('nosuchbucket',), 'R2_BUCKET_NOT_FOUND'),
