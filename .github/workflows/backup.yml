@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/backup.yml
+      - scripts/backup_postgres.py
   schedule:
     - cron: '17 0 * * *'
 permissions:
@@ -49,7 +50,10 @@ jobs:
           required = ['BACKUP_DATABASE_URL','R2_ENDPOINT_URL','R2_BUCKET','R2_PREFIX','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']
           missing = [key for key in required if not os.environ.get(key)]
           if missing: raise SystemExit('Backup not configured: ' + ', '.join(missing))
-          database_env(os.environ['BACKUP_DATABASE_URL'])
+          database = database_env(os.environ['BACKUP_DATABASE_URL'])
+          # Prevent an accidental backup from preview/worker/other database endpoints.
+          if database['PGHOST'] != 'ep-dawn-mode-basxmcbr.c-8.eu-central-1.aws.neon.tech' or database['PGDATABASE'] != 'wasla':
+              raise SystemExit('Configured backup source does not match production Neon endpoint')
           r2_settings()
           PY
       - name: Install the PostgreSQL 17 client from official PGDG repository

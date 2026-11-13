@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from scripts.backup_postgres import backup, database_env, r2_settings, upload_r2
+from scripts.backup_postgres import backup, database_env, r2_settings, upload_r2, failure_classification
 
 SETTINGS = {
     'BACKUP_DATABASE_URL': 'postgresql://u:p@db.example.test/wasla?sslmode=require&channel_binding=require',
@@ -21,6 +21,13 @@ SETTINGS = {
 
 
 class BackupSafety(unittest.TestCase):
+    def test_safe_failure_classification_cannot_echo_credentials(self):
+        error = b'pg_dump: error: password authentication failed for user private-secret'
+        self.assertEqual(failure_classification(error, 'db'), 'DB_AUTH')
+        self.assertEqual(failure_classification(b'connection timed out', 'db'), 'DB_NETWORK_OR_TIMEOUT')
+        self.assertEqual(failure_classification(b'AccessDenied: private-token', 'r2'), 'R2_AUTH')
+        self.assertEqual(failure_classification(b'unrecognized private error', 'r2'), 'R2_OTHER')
+
     def test_credentials_are_environment_only_and_tls_required(self):
         env = database_env('postgresql://operator:private%21@db.example.test/wasla?sslmode=require&channel_binding=require')
         self.assertEqual(env['PGPASSWORD'], 'private!')
@@ -109,14 +116,14 @@ class BackupSafety(unittest.TestCase):
             if dump_code or upload_code or head_code or mismatch:
                 with self.assertRaises(RuntimeError):
                     backup()
-                output.assert_not_called()
+                self.assertFalse(any('R2_UPLOAD_METADATA_OK' in str(c) for c in output.call_args_list))
                 if dump_code:
                     self.assertEqual(run.call_count, 1)
                 elif upload_code:
                     self.assertEqual(run.call_count, 2)
             else:
                 backup()
-                self.assertEqual(output.call_count, 2)
+                self.assertEqual(output.call_count, 5)
                 self.assertEqual(run.call_count, 3)
 
     def test_private_dump_upload_to_r2(self):
