@@ -12,7 +12,7 @@ jobs:
   queue:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: production-monitor
+    environment: production-backup
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -23,6 +23,6 @@ jobs:
       - run: pip install 'psycopg[binary]>=3.2.10,<4'
       - name: Check pending age and dead events
         env:
-          MONITOR_DATABASE_URL: ${{ secrets.MONITOR_DATABASE_URL }}
+          MONITOR_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           QUEUE_MAX_AGE_SECONDS: '300'
         run: python -m scripts.check_queue
