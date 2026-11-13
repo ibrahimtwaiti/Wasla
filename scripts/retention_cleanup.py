@@ -37,11 +37,12 @@ def eligible(db, name, cutoff, nowstamp, limit=250):
         'unconverted_leads': ("requests", "w", "w.status IN ('new','rejected') AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.request_id=w.id)", "request"),
     }
     table, alias, extra, entity_type = holds[name]
-    sql = f"""SELECT w.id FROM {table} w WHERE {extra} AND w.created_at < ?
+    date_column = "w.updated_at" if name == "unconverted_leads" else "w.created_at"
+    sql = f"""SELECT w.id FROM {table} w WHERE {extra} AND {date_column} < ?
         AND NOT EXISTS (SELECT 1 FROM retention_holds h
             WHERE h.entity_type=? AND h.entity_id=w.id
             AND (h.held_until IS NULL OR h.held_until > ?))
-        ORDER BY w.created_at ASC LIMIT ?"""
+        ORDER BY {date_column} ASC LIMIT ?"""
     return [row[0] for row in db.execute(sql,(cutoff,entity_type,nowstamp,limit)).fetchall()]
 
 
