@@ -59,11 +59,16 @@ def alert_from_event(event, event_name):
         return None
     # Construct the URL ourselves; do not trust arbitrary event URLs.
     url = "https://github.com/ibrahimtwaiti/Wasla/actions/runs/" + str(run_id)
-    body = ("فشل أو تعطل فحص تشغيلي في فرع main.\n\n"
-            f"**Workflow:** {name}\n**Result:** {conclusion}\n"
-            f"**Run:** {url}\n\n"
-            "المسؤول الوحيد الحالي: @ibrahimtwaiti. "
-            "يرجى فحص السبب وتوثيق المعالجة. لا تضع أسرارًا أو بيانات عملاء في المسألة.")
+    drill = run.get("event") == "push" and name == "Production health"
+    intro = ("اختبار إخفاق متعمّد وآمن للتحقق من وصول تنبيهات Wasla، وليس عطلًا في الموقع."
+             if drill else "فشل أو تعطل فحص تشغيلي في فرع main.")
+    body = (intro + "\n\n"
+            + f"**Workflow:** {name}\n**Result:** {conclusion}\n"
+            + f"**Run:** {url}\n\n"
+            + "المسؤول الوحيد الحالي: @ibrahimtwaiti. "
+            + "يرجى فحص السبب وتوثيق المعالجة. لا تضع أسرارًا أو بيانات عملاء في المسألة.")
+    if drill:
+        return ("health-drill", "[Wasla DRILL] اختبار تنبيه فشل المراقبة", body)
     return ("workflow-" + name.lower().replace(" ", "-"),
             "[Wasla ALERT] " + name, body)
 
