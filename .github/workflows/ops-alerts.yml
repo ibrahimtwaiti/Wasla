@@ -4,6 +4,7 @@ on:
     workflows:
       - Production health
       - Production queue health
+      - Production data retention
       - PostgreSQL database backup to R2
     types: [completed]
   push:
