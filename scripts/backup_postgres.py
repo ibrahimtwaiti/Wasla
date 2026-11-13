@@ -93,6 +93,7 @@ def upload_r2(dump_path):
     # Metadata verification is not a replacement for a separate download and restore.
     print('PostgreSQL backup uploaded and metadata verified:', dump_path.name)
     print('Backup SHA256:', digest)
+    return key, digest
 
 
 def backup():
@@ -108,7 +109,13 @@ def backup():
                                     env=env, stdout=output, stderr=subprocess.PIPE, timeout=600)
         if result.returncode:
             raise RuntimeError('pg_dump failed; no backup uploaded')
-        upload_r2(dump_path)
+        key, digest = upload_r2(dump_path)
+        output_path = os.environ.get('GITHUB_OUTPUT')
+        if output_path:
+            # Only public object locator and digest go to job outputs, never DB contents.
+            with open(output_path, 'a', encoding='utf-8') as output:
+                output.write('object_key=' + key + '\n')
+                output.write('sha256=' + digest + '\n')
 
 
 if __name__ == '__main__':
