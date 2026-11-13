@@ -6,6 +6,8 @@ for(const lang of ['ar','en']){
   await expect(page.locator('html')).toHaveAttribute('dir',lang==='ar'?'rtl':'ltr');
   for(const route of ['/','/services','/services/crm','/platform','/how-it-works','/about','/faq','/privacy','/terms','/login','/request']){
    await page.goto(route+'?lang='+lang);await expect(page.locator('main h1')).toBeVisible();
+   if(route==='/privacy')await expect(page.locator('article.policy')).toContainText(lang==='en'?'Privacy Policy':'سياسة الخصوصية');
+   if(route==='/terms')await expect(page.locator('article.policy')).toContainText(lang==='en'?'Terms of Use':'شروط استخدام');
    await expect(page.locator('main h1')).not.toContainText(/تعذر تحميل|Unable to load/);
    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),route).toBeTruthy();
    if(lang==='en')expect(await page.locator('main').innerText(),route).not.toMatch(/[\u0600-\u06ff]/);
