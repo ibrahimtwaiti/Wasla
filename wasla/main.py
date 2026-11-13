@@ -147,11 +147,11 @@ def health():
 def catalog(lang: str = "ar"):
     with transaction() as db:
         content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
+        original_content=content.copy()
         for key, fallback in DEFAULT_LEGAL_CONTENT.items():
             if not content.get(key, '').strip(): content[key]=fallback
         identity=brand.read(db)
         ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
-    original_content=content.copy()
     if lang=='en':
         content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en',''),'privacy':content.get('privacy_en',''),'terms':content.get('terms_en','')}
     return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'content_original':original_content,'brand':identity,'request_ready':ready}
