@@ -56,15 +56,31 @@ def execute(db, when, apply=False, limit=250):
         if not apply: continue
         for ident in selected:
             if name=='processed_webhooks':
-                db.execute("DELETE FROM webhook_events WHERE id=? AND status='processed'",(ident,))
+                db.execute("""DELETE FROM webhook_events WHERE id=? AND status='processed'
+                    AND created_at < ? AND NOT EXISTS (
+                        SELECT 1 FROM retention_holds h WHERE h.entity_type='webhook'
+                        AND h.entity_id=webhook_events.id AND (h.held_until IS NULL OR h.held_until > ?))""",
+                    (ident,cutoffs[name],stamp))
             elif name=='audit_logs':
-                db.execute("DELETE FROM audit WHERE id=?",(ident,))
+                db.execute("""DELETE FROM audit WHERE id=? AND created_at < ?
+                    AND NOT EXISTS (SELECT 1 FROM retention_holds h WHERE h.entity_type='audit'
+                    AND h.entity_id=audit.id AND (h.held_until IS NULL OR h.held_until > ?))""",
+                    (ident,cutoffs[name],stamp))
             else:
-                # Provider opportunity and notification references are removed
-                # before the unconverted request. All steps share one transaction.
+                # Lock before deleting linked records so a request cannot be
+                # accepted/converted concurrently after initial eligibility.
+                if postgres():
+                    db.execute('SELECT id FROM requests WHERE id=? FOR UPDATE',(ident,))
+                still_eligible=db.execute("""SELECT r.id FROM requests r
+                    WHERE r.id=? AND r.status IN ('new','rejected') AND r.updated_at < ?
+                    AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.request_id=r.id)
+                    AND NOT EXISTS (SELECT 1 FROM retention_holds h WHERE h.entity_type='request'
+                        AND h.entity_id=r.id AND (h.held_until IS NULL OR h.held_until > ?))""",
+                    (ident,cutoffs[name],stamp)).fetchone()
+                if not still_eligible: continue
                 db.execute('DELETE FROM provider_opportunities WHERE request_id=?',(ident,))
                 db.execute('DELETE FROM notifications WHERE entity_id=?',(ident,))
-                db.execute("DELETE FROM requests WHERE id=? AND status IN ('new','rejected') AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.request_id=requests.id)",(ident,))
+                db.execute("DELETE FROM requests WHERE id=?",(ident,))
     return result
 
 
