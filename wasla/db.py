@@ -108,6 +108,7 @@ def initialize():
             db.executescript((ROOT / 'migrations/001_initial.sql').read_text())
         # Safe upgrade of existing local SQLite development databases.
         db.execute("CREATE TABLE IF NOT EXISTS session_activity(token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE, issued_at BIGINT NOT NULL,last_seen_at BIGINT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS retention_holds(entity_type TEXT NOT NULL,entity_id TEXT NOT NULL,reason TEXT NOT NULL,held_until TEXT,created_at TEXT NOT NULL,PRIMARY KEY(entity_type,entity_id))")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?)", (now(),))
         db.commit()
 
