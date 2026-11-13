@@ -17,6 +17,35 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
 
+class BackupStageError(RuntimeError):
+    """Safe symbolic failure code; never includes connection strings or payloads."""
+
+
+def failure_classification(stderr, stage):
+    details = (stderr or b'').decode('utf-8', errors='replace').lower() if isinstance(stderr, bytes) else str(stderr or '').lower()
+    if stage == 'db':
+        categories = [
+            (('could not translate host name', 'name or service not known', 'temporary failure in name resolution'), 'DB_DNS'),
+            (('timeout expired', 'connection timed out', 'network is unreachable', 'no route to host', 'could not connect to server'), 'DB_NETWORK_OR_TIMEOUT'),
+            (('password authentication failed', 'authentication failed'), 'DB_AUTH'),
+            (('channel binding',), 'DB_CHANNEL_BINDING'),
+            (('ssl', 'certificate'), 'DB_TLS'),
+            (('permission denied',), 'DB_READ_PERMISSION'),
+            (('does not exist',), 'DB_NOT_FOUND'),
+        ]
+    else:
+        categories = [
+            (('accessdenied', 'forbidden', '403', 'invalidaccesskeyid', 'signaturedoesnotmatch'), 'R2_AUTH'),
+            (('could not connect', 'connection timed out', 'connect timeout', 'endpointconnectionerror'), 'R2_NETWORK'),
+            (('preconditionfailed', '412'), 'R2_OBJECT_ALREADY_EXISTS'),
+            (('nosuchbucket',), 'R2_BUCKET_NOT_FOUND'),
+        ]
+    for words, code in categories:
+        if any(word in details for word in words):
+            return code
+    return 'DB_OTHER' if stage == 'db' else 'R2_OTHER'
+
+
 def database_env(url):
     parsed = urlsplit(url)
     if parsed.scheme not in ('postgresql', 'postgres') or not parsed.hostname:
@@ -30,7 +59,7 @@ def database_env(url):
     env = {k: v for k, v in os.environ.items() if not k.startswith('PG')}
     env.update(PGHOST=parsed.hostname, PGPORT=str(parsed.port or 5432),
                PGDATABASE=unquote(parsed.path.lstrip('/')), PGUSER=unquote(parsed.username or ''),
-               PGPASSWORD=unquote(parsed.password or ''), PGSSLMODE=sslmode, PGCONNECT_TIMEOUT='15')
+               PGPASSWORD=unquote(parsed.password or ''), PGSSLMODE=sslmode, PGCONNECT_TIMEOUT='30')
     if not env['PGDATABASE'] or not env['PGUSER'] or not env['PGPASSWORD']:
         raise ValueError('Database, user and password are required')
     channel_binding = query.get('channel_binding', [''])[0]
@@ -81,16 +110,17 @@ def upload_r2(dump_path):
                                     '--metadata', 'sha256=' + digest, '--output', 'json'],
                             env=env, capture_output=True, timeout=300)
     if upload.returncode:
-        raise RuntimeError('R2 backup upload failed')
+        raise BackupStageError('R2_UPLOAD_' + failure_classification(getattr(upload, 'stderr', b''), 'r2'))
     check = subprocess.run(base + ['head-object', '--bucket', bucket, '--key', key,
                                    '--output', 'json'],
                            env=env, capture_output=True, timeout=60)
     if check.returncode:
-        raise RuntimeError('R2 upload verification failed')
+        raise BackupStageError('R2_HEAD_' + failure_classification(getattr(check, 'stderr', b''), 'r2'))
     metadata = json.loads(check.stdout)
     if metadata.get('ContentLength') != size or metadata.get('Metadata', {}).get('sha256') != digest:
         raise RuntimeError('R2 backup metadata mismatch')
     # Metadata verification is not a replacement for a separate download and restore.
+    print('Stage R2_UPLOAD_METADATA_OK', flush=True)
     print('PostgreSQL backup uploaded and metadata verified:', dump_path.name)
     print('Backup SHA256:', digest)
     return key, digest
@@ -104,11 +134,13 @@ def backup():
         dump_path = Path(folder) / ('wasla-' + stamp + '-' + uuid4().hex + '.dump')
         # A private, non-shared runner must be used; the temporary file holds raw DB data.
         fd = os.open(dump_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        print('Stage NEON_DUMP_STARTED', flush=True)
         with os.fdopen(fd, 'wb') as output:
             result = subprocess.run(['pg_dump', '--format=custom', '--no-owner', '--no-acl'],
                                     env=env, stdout=output, stderr=subprocess.PIPE, timeout=600)
         if result.returncode:
-            raise RuntimeError('pg_dump failed; no backup uploaded')
+            raise BackupStageError('NEON_PGDUMP_' + failure_classification(getattr(result, 'stderr', b''), 'db'))
+        print('Stage NEON_DUMP_COMPLETE; R2 upload starting', flush=True)
         key, digest = upload_r2(dump_path)
         output_path = os.environ.get('GITHUB_OUTPUT') if os.environ.get('WASLA_BACKUP_WRITE_OUTPUTS') == '1' else None
         if output_path:
@@ -121,5 +153,7 @@ def backup():
 if __name__ == '__main__':
     try:
         backup()
+    except BackupStageError as exc:
+        raise SystemExit('Backup failed at stage: ' + str(exc))
     except Exception:
-        raise SystemExit('Backup failed. Check required settings and provider access; no success recorded.')
+        raise SystemExit('Backup failed at an unspecified stage; no success recorded. Check protected settings.')
