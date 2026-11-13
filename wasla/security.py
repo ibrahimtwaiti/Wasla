@@ -15,8 +15,8 @@ PERMISSIONS = {
 }
 
 def hash_password(password):
-    if len(password) < 12 or len(password) > 128:
-        raise HTTPException(422, 'كلمة المرور يجب أن تكون بين 12 و128 حرفًا')
+    if len(password) < 16 or len(password) > 128:
+        raise HTTPException(422, 'كلمة المرور يجب أن تكون بين 16 و128 حرفًا')
     salt = secrets.token_hex(16)
     digest = hashlib.scrypt(password.encode(),salt=salt.encode(),n=16384,r=8,p=1).hex()
     return f'scrypt${salt}${digest}'

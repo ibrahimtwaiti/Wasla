@@ -23,7 +23,14 @@ function policyPage(path){
  ['الاستخدام المسؤول','استخدم حسابك ضمن مساحة الشركة وصلاحياتك، واحفظ بيانات الدخول، وقدّم معلومات صحيحة مخولًا بمشاركتها. الإرسال الخارجي لواتساب غير مفعل في V1.'],
  ['الدعم','تواصل مع الجهة المشغلة أدناه بشأن طلبك أو نطاق الخدمة. تخضع تغييرات الخدمات المتفق عليها لاتفاق الخدمة.']
  ]);
+ const key=privacy?(en?'privacy_en':'privacy'):(en?'terms_en':'terms');
  const custom=c[privacy?'privacy':'terms'];
- const body=custom?`<p class="policy-custom">${esc(custom)}</p>`:sections.map(([h,p])=>`<h2>${h}</h2><p>${p}</p>`).join('');
- publicShell(intro(en?'Wasla information':'معلومات وصلة',title,'')+`<article class="card policy">${body}<hr><h2>${en?'Operating entity and contact':'الجهة المشغلة والتواصل'}</h2><p>${esc(c.legal_entity||(en?'Service requests open after administrator activation and contact details are provided.':'يفتح استقبال الطلبات بعد تفعيل الإدارة وإضافة بيانات الجهة والتواصل.'))}</p>${c.contact_email?`<a href="mailto:${esc(c.contact_email)}">${esc(c.contact_email)}</a>`:''}</article>`);
+ const original=(catalog.content_original||{})[key];
+ const isDraft=!String(original||'').trim();
+ const body=custom?String(custom).split(/\n+/).filter(Boolean).map(line=>`<p class="policy-custom">${esc(line)}</p>`).join(''):
+    sections.map(([h,p])=>`<h2>${h}</h2><p>${p}</p>`).join('');
+ const warning=isDraft?`<div class="notice" role="status">${en?
+    'Operational public notice. The registered operator identity and independent legal review still require verification before binding commercial use.':
+    'إشعار تشغيلي: لم يُتحقق بعد من الاسم القانوني المسجل للجهة والمراجعة القانونية المستقلة قبل التعاقد التجاري الملزم.'}</div>`:'';
+ publicShell(intro(en?'Wasla information':'معلومات وصلة',title,'')+warning+`<article class="card policy">${body}<hr><h2>${en?'Operating entity and contact':'الجهة المشغلة والتواصل'}</h2><p>${esc(c.legal_entity|| (en?'Legal registration is pending verification.':'بيانات التسجيل القانوني قيد التحقق.'))}${isDraft?(en?' (registration not verified)':' (لم يُتحقق من التسجيل)'):''}</p>${c.contact_email?`<a href="mailto:${esc(c.contact_email)}">${esc(c.contact_email)}</a>`:''}</article>`);
 }

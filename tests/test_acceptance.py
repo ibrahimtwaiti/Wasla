@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
@@ -12,6 +14,7 @@ from wasla.main import app
 from wasla.db import initialize, transaction, now, uid, path
 from wasla.security import hash_password
 from wasla.worker import process_one
+from scripts.retention_cleanup import execute as apply_retention
 
 PASSWORD='test-only-long-password'
 HASH=hash_password(PASSWORD)
@@ -78,6 +81,68 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(self.client.post('/api/requests',json=self.request_data(),headers={'Idempotency-Key':uuid4().hex}).status_code,503)
         with transaction() as db:self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
     def test_anonymous_protected(self):self.assertEqual(self.client.get('/api/contacts').status_code,401)
+    def test_bilingual_public_legal_text_is_available(self):
+        ar=self.client.get('/api/catalog?lang=ar').json()['content']
+        en=self.client.get('/api/catalog?lang=en').json()['content']
+        self.assertIn('سياسة الخصوصية', ar['privacy'])
+        self.assertIn('شروط استخدام', ar['terms'])
+        self.assertIn('Privacy Policy', en['privacy'])
+        self.assertIn('Terms of Use', en['terms'])
+
+    def test_retention_respects_holds_and_removes_only_stale_unconverted_requests(self):
+        response=self.client.post('/api/requests',json=self.request_data(),headers={'Idempotency-Key':uuid4().hex})
+        self.assertEqual(response.status_code,201,response.text)
+        stale=(datetime.now(timezone.utc)-timedelta(days=220)).isoformat()
+        with transaction() as db:
+            ident=db.execute('SELECT id FROM requests').fetchone()[0]
+            db.execute('UPDATE requests SET created_at=?,updated_at=? WHERE id=?',(stale,stale,ident))
+            db.execute("INSERT INTO retention_holds VALUES('request',?, 'legal review', NULL,?)",(ident,now()))
+            dry=apply_retention(db,datetime.now(timezone.utc))
+            self.assertEqual(dry['counts']['unconverted_leads'],0)
+            db.execute("DELETE FROM retention_holds WHERE entity_type='request' AND entity_id=?",(ident,))
+            dry=apply_retention(db,datetime.now(timezone.utc))
+            self.assertEqual(dry['counts']['unconverted_leads'],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],1)
+            applied=apply_retention(db,datetime.now(timezone.utc),apply=True)
+            self.assertEqual(applied['counts']['unconverted_leads'],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM provider_opportunities').fetchone()[0],0)
+
+    def test_retention_preserves_pending_webhooks_and_audited_legal_holds(self):
+        stale=(datetime.now(timezone.utc)-timedelta(days=40)).isoformat()
+        with transaction() as db:
+            db.execute("INSERT INTO webhook_events(id,payload,status,created_at) VALUES('processed-old','{}','processed',?)",(stale,))
+            db.execute("INSERT INTO webhook_events(id,payload,status,created_at) VALUES('pending-old','{}','pending',?)",(stale,))
+            db.execute("INSERT INTO retention_holds VALUES('webhook','processed-old','incident',NULL,?)",(now(),))
+            dry=apply_retention(db,datetime.now(timezone.utc))
+            self.assertEqual(dry['counts']['processed_webhooks'],0)
+            db.execute("DELETE FROM retention_holds WHERE entity_type='webhook'")
+            applied=apply_retention(db,datetime.now(timezone.utc),apply=True)
+            self.assertEqual(applied['counts']['processed_webhooks'],1)
+            self.assertEqual(db.execute("SELECT count(*) FROM webhook_events WHERE id='processed-old'").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM webhook_events WHERE id='pending-old'").fetchone()[0],1)
+
+    def test_idle_session_expires_after_30_minutes(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET last_seen_at=?',(int(time.time())-1801,))
+        self.assertEqual(self.client.get('/api/me').status_code,401)
+
+    def test_absolute_session_expires_after_12_hours(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET issued_at=?',(int(time.time())-43201,))
+        self.assertEqual(self.client.get('/api/me').status_code,401)
+
+    def test_recent_session_renews_activity(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET last_seen_at=?',(int(time.time())-90,))
+        self.assertEqual(self.client.get('/api/me').status_code,200)
+        with transaction() as db:
+            activity=db.execute('SELECT last_seen_at FROM session_activity').fetchone()[0]
+        self.assertGreater(activity,int(time.time())-10)
+
     def test_login_cookie_and_logout(self):
         self.login();self.assertIn('wasla_session',self.client.cookies)
         self.assertEqual(self.post('/auth/logout',{}).status_code,200)

@@ -30,7 +30,7 @@ def main():
         name=input('Display name: ').strip()
         if '@' not in address or not name:
             raise SystemExit('Valid email and name required')
-        password=hash_password(getpass.getpass('Password (12+ characters): '))
+        password=hash_password(getpass.getpass('Password (16+ characters): '))
         with transaction() as db:
             if db.execute("SELECT 1 FROM users WHERE role='provider'").fetchone():
                 raise SystemExit('Provider already exists')

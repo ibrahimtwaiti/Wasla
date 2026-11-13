@@ -15,6 +15,7 @@ OWNER = "ibrahimtwaiti"
 WATCHED = frozenset({
     "Production health",
     "Production queue health",
+    "Production data retention",
     "PostgreSQL database backup to R2",
 })
 FAILURES = frozenset({"failure", "timed_out", "action_required"})

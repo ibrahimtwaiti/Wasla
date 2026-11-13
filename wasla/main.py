@@ -20,6 +20,7 @@ from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
 from .catalog_en import SERVICES_EN, CONSENT_EN
+from .legal import DEFAULT_LEGAL_CONTENT
 from . import brand
 
 STATIC=Path(__file__).parent/'static'
@@ -88,17 +89,30 @@ def operation(request):
     if not re.fullmatch('[a-zA-Z0-9_-]{16,80}',value): raise HTTPException(422,'معرف العملية مطلوب')
     return value
 
+SESSION_IDLE_SECONDS=30*60
+SESSION_ABSOLUTE_SECONDS=12*60*60
+
 async def user(request: Request):
     token=request.cookies.get('wasla_session','')
+    token_hash=digest(token)
+    timestamp=int(time.time())
     with transaction() as db:
-        record=one(db,'''SELECT u.*,s.csrf FROM sessions s JOIN users u ON s.user_id=u.id
-            WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',(digest(token),int(time.time())))
+        record=one(db,'''SELECT u.*,s.csrf,a.issued_at,a.last_seen_at FROM sessions s
+            JOIN session_activity a ON a.token_hash=s.token_hash
+            JOIN users u ON s.user_id=u.id
+            WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',(token_hash,timestamp))
         if not record: raise HTTPException(401,'يرجى تسجيل الدخول')
+        if (timestamp-record['last_seen_at']>=SESSION_IDLE_SECONDS
+                or timestamp-record['issued_at']>=SESSION_ABSOLUTE_SECONDS):
+            db.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash,))
+            raise HTTPException(401,'انتهت جلسة الدخول؛ سجّل الدخول مجددًا')
         if record['tenant_id']:
             tenant=one(db,'SELECT status FROM tenants WHERE id=?',(record['tenant_id'],))
-            if tenant['status']=='suspended': raise HTTPException(403,'اشتراك الشركة معلق؛ تواصل مع الإدارة')
+            if not tenant or tenant['status']=='suspended': raise HTTPException(403,'اشتراك الشركة معلق؛ تواصل مع الإدارة')
         if request.method not in {'GET','HEAD'} and not hmac.compare_digest(request.headers.get('X-CSRF-Token',''),record['csrf']):
             raise HTTPException(403,'انتهت صلاحية النموذج؛ حدّث الصفحة')
+        if timestamp-record['last_seen_at']>=60:
+            db.execute('UPDATE session_activity SET last_seen_at=? WHERE token_hash=?',(timestamp,token_hash))
         return record
 
 def provider(u):
@@ -133,9 +147,11 @@ def health():
 def catalog(lang: str = "ar"):
     with transaction() as db:
         content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
+        original_content=content.copy()
+        for key, fallback in DEFAULT_LEGAL_CONTENT.items():
+            if not content.get(key, '').strip(): content[key]=fallback
         identity=brand.read(db)
         ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
-    original_content=content.copy()
     if lang=='en':
         content={**content,'about':content.get('about_en',''),'working_hours':content.get('working_hours_en',''),'privacy':content.get('privacy_en',''),'terms':content.get('terms_en','')}
     return {'services':SERVICES_EN if lang=='en' else SERVICES,'consent':CONSENT_EN if lang=='en' else CONSENT,'content':content,'content_original':original_content,'brand':identity,'request_ready':ready}
@@ -191,7 +207,7 @@ def first_provider(data:dict,request:Request):
     if len(expected)<40 or not isinstance(supplied,str) or not hmac.compare_digest(supplied,expected) or time.time()>expires:
         raise HTTPException(403,'رابط التفعيل غير صالح أو انتهت صلاحيته')
     address=email(text(data,'email')); name=text(data,'name',2,100)
-    encoded=hash_password(text(data,'password',12,128))
+    encoded=hash_password(text(data,'password',16,128))
     entity=text(data,'legal_entity',2,160)
     contact=email(text(data,'contact_email'))
     with transaction() as db:
@@ -218,10 +234,12 @@ def login(data:dict,request:Request,response:Response):
         ok=verify_password(password,encoded)
         if not ok or not u: raise HTTPException(401,'بيانات الدخول غير صحيحة')
         token=secrets.token_urlsafe(32); csrf=secrets.token_urlsafe(24)
-        db.execute('DELETE FROM sessions WHERE expires_at<?',(int(time.time()),))
-        db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(digest(token),u['id'],csrf,int(time.time())+28800))
+        timestamp=int(time.time())
+        db.execute('DELETE FROM sessions WHERE expires_at<?',(timestamp,))
+        db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(digest(token),u['id'],csrf,timestamp+SESSION_ABSOLUTE_SECONDS))
+        db.execute('INSERT INTO session_activity(token_hash,issued_at,last_seen_at) VALUES(?,?,?)',(digest(token),timestamp,timestamp))
         audit(db,u,'auth.login',u['id'])
-    response.set_cookie('wasla_session',token,max_age=28800,httponly=True,secure=os.getenv('WASLA_ENV')=='production',samesite='strict',path='/')
+    response.set_cookie('wasla_session',token,max_age=SESSION_ABSOLUTE_SECONDS,httponly=True,secure=os.getenv('WASLA_ENV')=='production',samesite='strict',path='/')
     return {'ok':True}
 
 @app.get('/api/me')
@@ -236,7 +254,7 @@ def logout(request:Request,response:Response,u=Depends(user)):
 @app.post('/api/auth/password')
 def password(data:dict,u=Depends(user)):
     if not verify_password(text(data,'current_password',1,128),u['password_hash']): raise HTTPException(400,'كلمة المرور الحالية غير صحيحة')
-    new_hash=hash_password(text(data,'new_password',12,128))
+    new_hash=hash_password(text(data,'new_password',16,128))
     with transaction() as db:
         db.execute('UPDATE users SET password_hash=? WHERE id=?',(new_hash,u['id']))
         db.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],)); audit(db,u,'auth.password',u['id'])
