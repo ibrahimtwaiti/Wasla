@@ -10,3 +10,9 @@ artifacts/
 node_modules/
 playwright-report/
 test-results/
+
+# Temporary Google Workload Identity credentials and backup material.
+gha-creds-*.json
+*.dump
+*.dump.age
+wasla-backup-identity.txt
