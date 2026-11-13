@@ -6,6 +6,10 @@ on:
       - Production queue health
       - PostgreSQL database backup to R2
     types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ops-alerts.yml
   workflow_dispatch:
   schedule:
     - cron: '19 */6 * * *'
