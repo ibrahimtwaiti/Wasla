@@ -21,6 +21,8 @@ for(const lang of ['ar','en']){
 }
 test('provider identity persists and protected UI is usable',async({page})=>{
  await page.goto('/login?lang=en');await page.locator('[name=email]').fill('ui@example.test');await page.locator('[name=password]').fill('ui-only-long-password');await page.locator('button[type=submit]').click();await page.waitForURL('**/app');
+ await expect(page.locator('.app-layout')).toBeVisible();
+ await expect(page.locator('#main h1')).toBeVisible();
  await page.goto('/app/content?lang=en');await expect(page.locator('#brand-form')).toBeVisible();
  await page.locator('#brand-form [name=primary]').fill('#7650cc');await page.locator('#brand-form button[type=submit]').click();await expect(page.locator('#toast')).toBeVisible();
  await page.reload();await expect(page.locator('#brand-form [name=primary]')).toHaveValue('#7650cc');
@@ -28,4 +30,17 @@ test('provider identity persists and protected UI is usable',async({page})=>{
 });
 test('reduced motion leaves all sections visible',async({page})=>{
  await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/');await expect(page.locator('.brand-hero')).toBeVisible();expect(await page.locator('.reveal-ready').count()).toBe(0);
+});
+
+test('temporary session lookup failure offers retry without logging out',async({page})=>{
+ await page.route('**/api/me',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'Temporary service interruption'})}));
+ await page.goto('/app?lang=en');
+ await expect(page.locator('#reload')).toBeVisible();
+ await expect(page).toHaveURL(/\/app\?lang=en$/);
+ await expect(page.locator('main')).toContainText('Temporary service interruption');
+});
+test('unauthenticated protected page redirects to login',async({page})=>{
+ await page.goto('/app/content?lang=en');
+ await expect(page.locator('#login-form')).toBeVisible();
+ await expect(page).toHaveURL(/\/login$/);
 });
