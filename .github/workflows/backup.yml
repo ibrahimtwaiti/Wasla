@@ -17,7 +17,7 @@ jobs:
   backup_and_restore:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment: production-backup
     services:
       restore-postgres:
