@@ -82,3 +82,9 @@ pg_restore --exit-on-error --no-owner --no-acl --dbname="$PGDATABASE" restore.du
 - داخل GitHub → Wasla → Settings → Environments → production-backup → Environment secrets، استبدل **كلا** السرّين `R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` بزوج الرمز نفسه. لا تخلط رمز الاستعادة `Object Read` مع رمز النسخ. لا تنشر القيم أو الصور التي تعرضها.
 - اترك `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_PREFIX` كما هي. اختبر `HeadBucket` بالاعتمادات الجديدة ثم `Run workflow` يدويًا من `main`. تحقق من `R2_S3_AUTH_CHECK_OK` ثم `R2_UPLOAD_METADATA_OK` ثم `Isolated PostgreSQL 17 restore passed`.
 - لا تحذف الرموز القديمة حتى تتأكد من نجاح الإصدار البديل؛ بعدها دوّر القديم بحذر وحافظ على رمز الاستعادة المستقل.
+
+## تشخيص توقيع R2 — تحديث 13 نوفمبر 2026
+- أحدث محاولة رقم `43396303322` وصلت `NEON_DUMP_COMPLETE` ثم فشلت عند `PutObject` برمز `R2_UPLOAD_R2_SECRET_MISMATCH`. هذا يشير إلى توقيع S3 غير متطابق؛ قد يكون بسبب عدم تطابق زوج المفاتيح **أو أسلوب توقيع/نقل PUT**، ولا يكفي وحده لإثبات أن السر خاطئ.
+- يجري فحص R2 مستقل قبل تفريغ Neon: `ListObjectsV2` الموقّع، ثم `PutObject` صغير غير حساس، `HeadObject` و`DeleteObject`، ولا يحتفظ بمفاتيح في السجلات. نجاح القراءة وفشل الكتابة يوجه التحقيق إلى طريقة توقيع PUT بدل افتراض تغيير المفاتيح فورًا.
+- إذا فشلت القراءة نفسها بتوقيع غير صحيح، يجب تحديث `R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` من **نفس رمز الكاتب** داخل GitHub Environment `production-backup`. لا تعرض أي قيمة حساسة في المحادثة.
+- النتيجة المطلوبة للإغلاق: `R2_PREFLIGHT_WRITE_READ_CLEANUP_OK` ثم نجاح `pg_dump` ورفع `.dump` واستعادته إلى PostgreSQL مؤقتة بنجاح.
