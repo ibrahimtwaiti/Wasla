@@ -56,7 +56,7 @@ jobs:
               raise SystemExit('Configured backup source does not match production Neon endpoint')
           r2_settings()
           PY
-      - name: Verify bucket-scoped R2 credentials via signed S3 request
+      - name: Validate R2 list and safe write before reading Neon
         env:
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
@@ -66,16 +66,31 @@ jobs:
         run: |
           python - <<'PY'
           import subprocess
+          import tempfile
+          from pathlib import Path
+          from uuid import uuid4
           from scripts.backup_postgres import r2_settings, failure_classification
-          endpoint, bucket, _, env = r2_settings()
-          result = subprocess.run(
-              ['aws', '--endpoint-url', endpoint, '--region', 'auto', 's3api',
-               'head-bucket', '--bucket', bucket],
-              env=env, capture_output=True, timeout=45)
-          if result.returncode:
-              code = failure_classification(result.stderr, 'r2')
-              raise SystemExit('R2_S3_AUTH_CHECK_' + code)
-          print('R2_S3_AUTH_CHECK_OK')
+          endpoint, bucket, prefix, env = r2_settings()
+          base = ['aws', '--endpoint-url', endpoint, '--region', 'auto', 's3api']
+          def check(args, stage):
+              response = subprocess.run(base + args, env=env, capture_output=True, timeout=60)
+              if response.returncode:
+                  safe_code = failure_classification(response.stderr, 'r2')
+                  raise SystemExit('R2_PREFLIGHT_' + stage + '_' + safe_code)
+          check(['list-objects-v2', '--bucket', bucket,
+                 '--prefix', prefix + '/', '--max-keys', '1', '--output', 'json'], 'LIST')
+          print('R2_PREFLIGHT_LIST_OK', flush=True)
+          with tempfile.TemporaryDirectory(prefix='wasla-r2-test-') as folder:
+              file = Path(folder) / 'probe.txt'
+              file.write_bytes(b'wasla-r2-sigv4-preflight-v1\n')
+              key = prefix + '/.diagnostics/r2-write-probe-' + uuid4().hex + '.txt'
+              check(['put-object', '--bucket', bucket, '--key', key,
+                     '--body', str(file), '--if-none-match', '*', '--output', 'json'], 'PUT')
+              try:
+                  check(['head-object', '--bucket', bucket, '--key', key, '--output', 'json'], 'HEAD')
+              finally:
+                  check(['delete-object', '--bucket', bucket, '--key', key, '--output', 'json'], 'CLEANUP')
+          print('R2_PREFLIGHT_WRITE_READ_CLEANUP_OK', flush=True)
           PY
       - name: Install the PostgreSQL 17 client from official PGDG repository
         run: |
