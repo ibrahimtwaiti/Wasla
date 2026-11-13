@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
@@ -78,6 +79,27 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(self.client.post('/api/requests',json=self.request_data(),headers={'Idempotency-Key':uuid4().hex}).status_code,503)
         with transaction() as db:self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
     def test_anonymous_protected(self):self.assertEqual(self.client.get('/api/contacts').status_code,401)
+    def test_idle_session_expires_after_30_minutes(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET last_seen_at=?',(int(time.time())-1801,))
+        self.assertEqual(self.client.get('/api/me').status_code,401)
+
+    def test_absolute_session_expires_after_12_hours(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET issued_at=?',(int(time.time())-43201,))
+        self.assertEqual(self.client.get('/api/me').status_code,401)
+
+    def test_recent_session_renews_activity(self):
+        self.login()
+        with transaction() as db:
+            db.execute('UPDATE session_activity SET last_seen_at=?',(int(time.time())-90,))
+        self.assertEqual(self.client.get('/api/me').status_code,200)
+        with transaction() as db:
+            activity=db.execute('SELECT last_seen_at FROM session_activity').fetchone()[0]
+        self.assertGreater(activity,int(time.time())-10)
+
     def test_login_cookie_and_logout(self):
         self.login();self.assertIn('wasla_session',self.client.cookies)
         self.assertEqual(self.post('/auth/logout',{}).status_code,200)
