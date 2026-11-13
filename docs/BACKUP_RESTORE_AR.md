@@ -7,7 +7,7 @@
 - رمزان مقيدان بالحاوية ظاهران Active في لوحة Cloudflare: `wasla-production-backup-writer` بصلاحية Object Read & Write و`wasla-production-restore-reader` بصلاحية Object Read.
 - تظهر أسماء أسرار GitHub `BACKUP_DATABASE_URL` و`R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` والمتغيرات `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_PREFIX` في بيئة `production-backup`؛ لا يمكن التحقق من قيم الأسرار من صور الشاشة.
 - دُمجت حزمة إغلاق V1 عبر PR #7 في `main`. بعد تصحيح المالك مفاتيح البيئة، نجحت إعادة تشغيل GitHub Actions رقم `43426119356` (المحاولة الثانية) بتاريخ **13 نوفمبر 2026 الساعة 12:53 UTC**: الرفع والتنزيل والتحقق من SHA-256 واستعادة 19 جدولًا على PostgreSQL 17 معزولة نجحت. تحقّقنا من وجود أرشيف `.dump` بحجم **79,987 بايت** مباشرة في R2. لم تُمس قاعدة Neon الإنتاجية أو snapshot القائمة.
-- لا توجد قاعدة Bucket Lock مفعّلة حتى آخر فحص. يحتاج المالك اعتماد مدة الاحتفاظ ومكان الإقامة/الولاية القضائية قبل فرض القواعد.
+- تم تنفيذ Bucket Lock لمدة 7 أيام وLifecycle Delete بعد 30 يومًا على مسار `production/postgres/wasla-` وتحققنا من القواعد عبر Cloudflare API. يحتاج نقل البيانات والإقامة الجغرافية مراجعة قانونية مستقلة.
 
 ## البنية
 Neon PostgreSQL 17 production (اتصال Direct) → `pg_dump --format=custom` → ملف مؤقت .dump بصلاحية 0600 على GitHub-hosted runner → Cloudflare R2 خاص عبر S3-compatible API/HTTPS → `HeadObject` وفحص الحجم وSHA256 metadata → استعادة منفصلة معزولة.
@@ -18,7 +18,7 @@ Neon PostgreSQL 17 production (اتصال Direct) → `pg_dump --format=custom` 
 1. bucket: `wasla-production-backups`، التخزين Standard، وصول عام معطّل دون custom domain.
 2. حساب الكتابة: R2 Account API token `Object Read & Write` مقيد بالحاوية فقط. **ليس write-only**؛ لذا ينبغي حماية الاحتفاظ بـ Bucket Lock عند اعتماد السياسة.
 3. حساب الاستعادة: `Object Read` مقيد بالحاوية نفسها، ومفاتيحه خارج GitHub Actions للنسخ.
-4. المقترح (غير مفعل): Bucket Lock لمدة 30 يومًا على `production/postgres/`. لا تضف Lifecycle Delete قبل اعتماد سياسة الاحتفاظ. ادرس إقامة البيانات لأن default/APAC ليست ضمانًا للإقامة في بلد بعينه.
+4. المطبق بموافقة المالك: Bucket Lock لمدة 7 أيام وحذف تلقائي بعد 30 يومًا على `production/postgres/wasla-` فقط. لا تغيّر قاعدة default multipart السابقة. ادرس إقامة البيانات لأن default/APAC ليست ضمانًا للإقامة في بلد بعينه.
 5. تجنب مشاركة أي Secret Access Key أو PostgreSQL URL في Git أو المحادثات أو السجلات. راجع صلاحية الرمز ودوّره بجدول موثق.
 
 ## 2. GitHub Environment: production-backup
@@ -101,3 +101,6 @@ pg_restore --exit-on-error --no-owner --no-acl --dbname="$PGDATABASE" restore.du
 - **الحفاظ على Neon:** بقيت Snapshot `snap-divine-unit-bay7yrah` موجودة ولم تُحذف.
 - **الإغلاق التشغيلي:** أُغلق بلاغ [Issue #18](https://github.com/ibrahimtwaiti/Wasla/issues/18) بعد توثيق النجاح، ولم تُمسح النسخة القديمة الموجودة في Neon.
 - **بوابات لا تزال مفتوحة:** اعتماد مدة الاحتفاظ/قواعد Bucket Lock، والتأكيد على الإقامة الجغرافية إن كانت مطلوبة، وبيانات الجهة والسوق والسياسات وضوابط الإدارة التي أجّلها المالك. **مفاتيح الكاتب والقارئ ظهرت في صور المحادثة** ويجب اعتبارها مكشوفة وتدويرها قبل استخدام معلومات عملاء حساسة. مسار النسخ يعمل دون تشفير `age` بقرار المالك.
+
+
+> تحديث 13 نوفمبر 2026: اعتمد المالك الاستغناء عن MFA، وقبول مخاطر مفاتيح R2 المكشوفة مؤقتًا داخل V1. نُفذت قواعد R2 والجلسات وبعض سياسات الحذف واختُبرت؛ يبقى استيفاء الهوية القانونية والنقل والحذف الكامل شرطًا منفصلًا للاعتماد التجاري النهائي. المرجع: `docs/V1_OWNER_GOVERNANCE_AR.md` و`docs/V1_CLOSEOUT_AR.md`.
