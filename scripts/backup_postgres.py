@@ -110,7 +110,7 @@ def backup():
         if result.returncode:
             raise RuntimeError('pg_dump failed; no backup uploaded')
         key, digest = upload_r2(dump_path)
-        output_path = os.environ.get('GITHUB_OUTPUT')
+        output_path = os.environ.get('GITHUB_OUTPUT') if os.environ.get('WASLA_BACKUP_WRITE_OUTPUTS') == '1' else None
         if output_path:
             # Only public object locator and digest go to job outputs, never DB contents.
             with open(output_path, 'a', encoding='utf-8') as output:
