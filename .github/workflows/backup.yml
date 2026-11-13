@@ -74,6 +74,7 @@ jobs:
       - name: Dump production, upload and verify R2 metadata
         id: upload
         env:
+          WASLA_BACKUP_WRITE_OUTPUTS: '1'
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
