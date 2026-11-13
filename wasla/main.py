@@ -20,6 +20,7 @@ from .db import initialize, transaction, one, rows, audit, now, uid, postgres
 from .security import hash_password, verify_password, digest, permit, limit, ROLES
 from .catalog import SERVICES, CONSENT
 from .catalog_en import SERVICES_EN, CONSENT_EN
+from .legal import DEFAULT_LEGAL_CONTENT
 from . import brand
 
 STATIC=Path(__file__).parent/'static'
@@ -146,6 +147,8 @@ def health():
 def catalog(lang: str = "ar"):
     with transaction() as db:
         content={r['key']:r['value'] for r in db.execute("SELECT * FROM content WHERE key != 'brand'")}
+        for key, fallback in DEFAULT_LEGAL_CONTENT.items():
+            if not content.get(key, '').strip(): content[key]=fallback
         identity=brand.read(db)
         ready=bool(one(db,"SELECT id FROM users WHERE role='provider' AND active=1 LIMIT 1"))
     original_content=content.copy()
