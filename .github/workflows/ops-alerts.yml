@@ -1,0 +1,39 @@
+name: Wasla operational alerts
+on:
+  workflow_run:
+    workflows:
+      - Production health
+      - Production queue health
+      - PostgreSQL database backup to R2
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ops-alerts.yml
+  workflow_dispatch:
+  schedule:
+    - cron: '19 */6 * * *'
+permissions:
+  contents: read
+  actions: read
+  issues: write
+concurrency:
+  group: wasla-operational-alerts
+  cancel-in-progress: false
+jobs:
+  notify:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+       contains(fromJSON('["failure","timed_out","action_required"]'), github.event.workflow_run.conclusion))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Open deduplicated owner-assigned alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m scripts.ops_alert
