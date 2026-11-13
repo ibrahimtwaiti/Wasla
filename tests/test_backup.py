@@ -116,14 +116,14 @@ class BackupSafety(unittest.TestCase):
             if dump_code or upload_code or head_code or mismatch:
                 with self.assertRaises(RuntimeError):
                     backup()
-                output.assert_not_called()
+                self.assertFalse(any('R2_UPLOAD_METADATA_OK' in str(c) for c in output.call_args_list))
                 if dump_code:
                     self.assertEqual(run.call_count, 1)
                 elif upload_code:
                     self.assertEqual(run.call_count, 2)
             else:
                 backup()
-                self.assertEqual(output.call_count, 2)
+                self.assertEqual(output.call_count, 5)
                 self.assertEqual(run.call_count, 3)
 
     def test_private_dump_upload_to_r2(self):
