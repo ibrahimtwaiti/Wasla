@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from wasla.main import app
 from wasla.db import initialize, transaction, now, uid, path
@@ -121,6 +122,19 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(applied['counts']['processed_webhooks'],1)
             self.assertEqual(db.execute("SELECT count(*) FROM webhook_events WHERE id='processed-old'").fetchone()[0],0)
             self.assertEqual(db.execute("SELECT count(*) FROM webhook_events WHERE id='pending-old'").fetchone()[0],1)
+
+    def test_retention_rechecks_eligibility_before_removing_references(self):
+        response=self.client.post('/api/requests',json=self.request_data(),headers={'Idempotency-Key':uuid4().hex})
+        self.assertEqual(response.status_code,201,response.text)
+        stale=(datetime.now(timezone.utc)-timedelta(days=220)).isoformat()
+        with transaction() as db:
+            ident=db.execute('SELECT id FROM requests').fetchone()[0]
+            db.execute("UPDATE requests SET created_at=?,updated_at=?,status='accepted' WHERE id=?",(stale,stale,ident))
+            # Simulate a stale candidate selected while another operation accepted it.
+            with patch('scripts.retention_cleanup.eligible',side_effect=lambda d,n,c,stamp,limit: [ident] if n=='unconverted_leads' else []):
+                apply_retention(db,datetime.now(timezone.utc),apply=True)
+            self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM provider_opportunities').fetchone()[0],1)
 
     def test_idle_session_expires_after_30_minutes(self):
         self.login()
