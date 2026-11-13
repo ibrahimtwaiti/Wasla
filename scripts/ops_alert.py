@@ -7,7 +7,8 @@ Only public workflow metadata is included; no customer data or secrets.
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 OWNER = "ibrahimtwaiti"
@@ -42,7 +43,7 @@ def api(method, path, payload=None, *, token=None, repo=None):
 
 def alert_from_event(event, event_name):
     """Return (key, title, safe body) or None."""
-    if event_name == "workflow_dispatch":
+    if event_name in {"workflow_dispatch", "push"}:
         return ("test", "[Wasla TEST] تجربة إشعار التشغيل",
                 "هذا تنبيه اختبار اصطناعي، وليس عطلًا حقيقيًا. "
                 "يرجى التحقق من وصول إشعار GitHub إلى البريد المختار ثم إغلاق المسألة.")
@@ -120,11 +121,18 @@ def create_once(alert):
 
 def main():
     name = os.environ["GITHUB_EVENT_NAME"]
-    if name in {"workflow_run", "workflow_dispatch"}:
+    if name in {"workflow_run", "workflow_dispatch", "push"}:
         with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as stream:
             event = json.load(stream)
         alert = alert_from_event(event, name)
     elif name == "schedule":
+        try:
+            api("GET", "actions/workflows/" + BACKUP_WORKFLOW)
+        except HTTPError as exc:
+            if exc.code == 404:
+                print("Backup workflow is not live on main yet; age monitoring deferred")
+                return
+            raise
         runs = api("GET", "actions/workflows/" + BACKUP_WORKFLOW + "/runs?"
                    + urlencode({"branch": "main", "status": "success", "per_page": 1}))
         all_runs = runs.get("workflow_runs", [])
