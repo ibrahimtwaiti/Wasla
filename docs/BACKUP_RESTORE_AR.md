@@ -2,11 +2,11 @@
 
 تحديث 13 نوفمبر 2026. **قرار المالك: رفع نسخ PostgreSQL إلى R2 دون تشفير age أو أي تشفير يتحكم المالك بمفتاحه.** تستخدم R2 التشفير على مستوى التخزين لدى Cloudflare، ويستخدم النقل TLS/HTTPS. هذا **ليس** تشفيرًا من طرف إلى طرف: أي شخص لديه صلاحية قراءة R2 يمكنه تنزيل أرشيف قاعدة البيانات وقراءة بياناته. لا يناسب هذا القرار أي سياسة تلزم بتشفير النسخ بمفتاح مستقل.
 
-## الحالة الحالية (لا تدّعِ نجاح تشغيل حي)
+## الحالة الحالية (لا تدّعِ نجاح النسخ أو الاستعادة)
 - حاوية R2 الخاصة `wasla-production-backups` موجودة بفئة Standard، jurisdiction=default وموقع أُبلغ عنه APAC. الوصول العام r2.dev معطّل ولا توجد نطاقات عامة.
 - رمزان مقيدان بالحاوية ظاهران Active في لوحة Cloudflare: `wasla-production-backup-writer` بصلاحية Object Read & Write و`wasla-production-restore-reader` بصلاحية Object Read.
 - تظهر أسماء أسرار GitHub `BACKUP_DATABASE_URL` و`R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` والمتغيرات `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_PREFIX` في بيئة `production-backup`؛ لا يمكن التحقق من قيم الأسرار من صور الشاشة.
-- لم يُدمج PR #4 في `main` بعد. **لم تُرفع نسخة حقيقية ولم تنفذ استعادة R2 حتى الآن.** نسخة Neon الحالية والفرع الإنتاجي لم تُمس.
+- دُمجت حزمة إغلاق V1 عبر PR #7 في `main`، لكن **فشلت ثلاث محاولات رفع حقيقية إلى R2**. آخرها `43396303322`: اكتمل `pg_dump` من Neon ثم رُفض توقيع S3 عند رفع الملف (`R2_UPLOAD_R2_SECRET_MISMATCH`). لم تُسجّل نسخة قابلة للتنزيل أو استعادة R2 حتى الآن. نسخة Neon الحالية والفرع الإنتاجي لم تُمس.
 - لا توجد قاعدة Bucket Lock مفعّلة حتى آخر فحص. يحتاج المالك اعتماد مدة الاحتفاظ ومكان الإقامة/الولاية القضائية قبل فرض القواعد.
 
 ## البنية
@@ -36,12 +36,12 @@ Neon PostgreSQL 17 production (اتصال Direct) → `pg_dump --format=custom` 
 **لا تضف `BACKUP_AGE_RECIPIENT`.** لا تستعمل مفتاح فك التشفير ولا تحتاج `age-keygen`. إذا أُضيف متغير age قديم يمكن تركه غير مستخدم مؤقتًا أو حذفه بعد التحقق من عدم استخدامه في مهام أخرى.
 
 ## 3. التشغيل والتحقق
-1. بعد نجاح فحوص CI ومراجعة ودمج PR #4، شغّل GitHub → Actions → `PostgreSQL database backup to R2` → Run workflow على `main`. لا يتم تشغيل workflow من فرع PR بواسطة إعدادات job الحالية؛ الملف يجب أن يُدمج أولاً.
-2. يثبت PostgreSQL client 17. يرفض الاتصالات pooled وغير TLS، ويزيل وراثة مفاتيح AWS أخرى قبل الاتصال بـR2.
+1. المهمة موجودة في `main`، وتعمل يوميًا وتدويًا عبر GitHub → Actions → `PostgreSQL database backup to R2` → Run workflow على `main`، كما تُشغّل عند تحديث ملف المهمة أو `scripts/backup_postgres.py`. بعد تصحيح مفتاح R2 في GitHub Secrets، نفّذ Run workflow يدويًا للتحقق فورًا؛ لا تدع نجاح CI يحل محل النسخ الحي.
+2. يتحقق مسبقًا من اتصال الإنتاج المباشر ومن التوقيع على طلب `HeadBucket` إلى R2 باستخدام مفاتيح البيئة المحمية، ويرفض عند `R2_SECRET_MISMATCH` أو رفض الصلاحية قبل تشغيل `pg_dump`. يثبت PostgreSQL client 17 من PGDG الرسمي؛ يرفض pooled وغير TLS.
 3. ينشئ `pg_dump` أرشيفًا مخصصًا `.dump` داخل دليل مؤقت خاص وملف mode 0600. عند فشل dump أو عدم صحة بصمة `PGDMP`، لا يبدأ الرفع. تزال الملفات المؤقتة بعد انتهاء المهمة. تبقى البيانات **غير مشفرة بمفتاح العميل** أثناء وجودها على القرص المؤقت.
 4. يرفع إلى `production/postgres/wasla-<timestamp>-<uuid>.dump` بشرط `If-None-Match: *` لمنع استبدال كائن موجود. اسم الملف فريد. يرفض الأرشيف الفارغ أو الأكبر من 5 GiB (يتطلب الأكبر Multipart بدعم عدم الاستبدال قبل الاعتماد).
 5. بعد الرفع، يفحص HeadObject الحجم وmetadata SHA256 ويفشل المهمة عند الاختلاف. هذا ليس بديلًا عن التنزيل والاستعادة؛ metadata وحدها ليست إثباتًا ضد تعديل مهاجم يملك صلاحيات كتابة.
-6. احفظ اسم الكائن، توقيت بدء النسخ، SHA256، ورابط تشغيل Actions. لا ترفع dump أو سجلًا محتويًا على بيانات حساسة كـ artifact.
+6. بعد رفع الملف، تُنزّل المهمة **نفس كائن R2** تلقائيًا في Runner منفصل عن قاعدة Neon وتتحقق من SHA256 ثم تستعيده داخل حاوية PostgreSQL 17 مؤقتة؛ تفحص وجود 19 جدولًا على الأقل. لا تعلن نجاح النسخ والاستعادة إلا إذا نجحت خطوة الاستعادة كاملة. احتفظ باسم الكائن، توقيت النسخ، SHA256، ورابط التشغيل. لا ترفع dump أو سجلًا محتويًا على بيانات حساسة كـ artifact.
 
 ## 4. تجربة الاستعادة الإلزامية (ليس على الإنتاج)
 1. أنشئ قاعدة PostgreSQL 17 جديدة فارغة ومعزولة كليًا عن الإنتاج، دون webhooks/رسائل/مجدولات أو شبكة عامة. تحقق من وجهة الاتصال قبل أي أمر استعادة.
@@ -74,3 +74,17 @@ pg_restore --exit-on-error --no-owner --no-acl --dbname="$PGDATABASE" restore.du
 - https://developers.cloudflare.com/r2/api/tokens/
 - https://developers.cloudflare.com/r2/buckets/bucket-locks/
 - https://developers.cloudflare.com/r2/api/s3/api/
+
+
+## إصلاح رفض توقيع R2 عند أول تشغيل
+- آخر فشل مؤكد: `R2_UPLOAD_R2_SECRET_MISMATCH` من تشغيل GitHub رقم `43396303322`؛ نجاح تصدير Neon مثبت قبله. هذا قد يكون عدم تطابق زوج مفاتيح S3 أو خللًا في توقيع الطلب، وليس إذنًا بتغيير قاعدة الإنتاج.
+- افتح Cloudflare → R2 → Manage R2 API Tokens، وتحقق أن رمز الكاتب بصلاحية Object Read & Write ومقيد بحاوية `wasla-production-backups` فقط. إن فقدت Secret Access Key الأصلي، أنشئ رمز كاتب جديدًا واحتفظ **بـ Access Key ID وSecret Access Key اللذين ظهرا معًا**.
+- داخل GitHub → Wasla → Settings → Environments → production-backup → Environment secrets، استبدل **كلا** السرّين `R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` بزوج الرمز نفسه. لا تخلط رمز الاستعادة `Object Read` مع رمز النسخ. لا تنشر القيم أو الصور التي تعرضها.
+- اترك `R2_ENDPOINT_URL` و`R2_BUCKET` و`R2_PREFIX` كما هي. اختبر `HeadBucket` بالاعتمادات الجديدة ثم `Run workflow` يدويًا من `main`. تحقق من `R2_S3_AUTH_CHECK_OK` ثم `R2_UPLOAD_METADATA_OK` ثم `Isolated PostgreSQL 17 restore passed`.
+- لا تحذف الرموز القديمة حتى تتأكد من نجاح الإصدار البديل؛ بعدها دوّر القديم بحذر وحافظ على رمز الاستعادة المستقل.
+
+## تشخيص توقيع R2 — تحديث 13 نوفمبر 2026
+- أحدث محاولة رقم `43396303322` وصلت `NEON_DUMP_COMPLETE` ثم فشلت عند `PutObject` برمز `R2_UPLOAD_R2_SECRET_MISMATCH`. هذا يشير إلى توقيع S3 غير متطابق؛ قد يكون بسبب عدم تطابق زوج المفاتيح **أو أسلوب توقيع/نقل PUT**، ولا يكفي وحده لإثبات أن السر خاطئ.
+- يجري فحص R2 مستقل قبل تفريغ Neon: `ListObjectsV2` الموقّع، ثم `PutObject` صغير غير حساس، `HeadObject` و`DeleteObject`، ولا يحتفظ بمفاتيح في السجلات. نجاح القراءة وفشل الكتابة يوجه التحقيق إلى طريقة توقيع PUT بدل افتراض تغيير المفاتيح فورًا.
+- إذا فشلت القراءة نفسها بتوقيع غير صحيح، يجب تحديث `R2_ACCESS_KEY_ID` و`R2_SECRET_ACCESS_KEY` من **نفس رمز الكاتب** داخل GitHub Environment `production-backup`. لا تعرض أي قيمة حساسة في المحادثة.
+- النتيجة المطلوبة للإغلاق: `R2_PREFLIGHT_WRITE_READ_CLEANUP_OK` ثم نجاح `pg_dump` ورفع `.dump` واستعادته إلى PostgreSQL مؤقتة بنجاح.
