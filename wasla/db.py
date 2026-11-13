@@ -77,19 +77,28 @@ def migrate():
         return initialize()
     import psycopg
     direct = os.environ.get('DATABASE_URL_UNPOOLED') or pg_url()
-    script = (ROOT / 'migrations/002_postgres.sql').read_text()
     with psycopg.connect(direct, connect_timeout=15, prepare_threshold=None) as conn:
         with conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext('wasla-schema-v1'))")
-            for statement in script.split(';'):
-                if statement.strip():
-                    conn.execute(statement)
+            initialized = conn.execute("SELECT to_regclass('public.schema_migrations')").fetchone()[0]
+            if not initialized or conn.execute('SELECT version FROM schema_migrations WHERE version=1').fetchone() is None:
+                script = (ROOT / 'migrations/002_postgres.sql').read_text()
+                for statement in script.split(';'):
+                    if statement.strip():
+                        conn.execute(statement)
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=2').fetchone() is None:
+                script = (ROOT / 'migrations/003_session_activity.sql').read_text()
+                for statement in script.split(';'):
+                    if statement.strip():
+                        conn.execute(statement)
 
 def initialize():
     if postgres():
         with transaction() as db:
             if not one(db, 'SELECT version FROM schema_migrations WHERE version=1'):
                 raise RuntimeError('PostgreSQL migrations missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=2'):
+                raise RuntimeError('Security migration missing: python -m wasla.cli init')
         return
     Path(path()).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path()) as db:
@@ -97,6 +106,10 @@ def initialize():
         exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'").fetchone()
         if not exists:
             db.executescript((ROOT / 'migrations/001_initial.sql').read_text())
+        # Safe upgrade of existing local SQLite development databases.
+        db.execute("CREATE TABLE IF NOT EXISTS session_activity(token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE, issued_at BIGINT NOT NULL,last_seen_at BIGINT NOT NULL)")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?)", (now(),))
+        db.commit()
 
 def audit(db, user, action, entity, detail=''):
     db.execute('INSERT INTO audit VALUES(?,?,?,?,?,?,?)',
