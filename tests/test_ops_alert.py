@@ -85,5 +85,18 @@ class OpsAlertTests(unittest.TestCase):
         self.assertIn("[Wasla TEST]", alert[1])
 
 
+    def test_safe_health_drill_marked_as_test_not_real_incident(self):
+        event = {'workflow_run': {
+            'name': 'Production health',
+            'conclusion': 'failure',
+            'head_branch': 'main',
+            'id': 789,
+            'event': 'push',
+        }}
+        alert = ops_alert.alert_from_event(event, 'workflow_run')
+        self.assertEqual(alert[0], 'health-drill')
+        self.assertIn('[Wasla DRILL]', alert[1])
+        self.assertIn('وليس عطلًا في الموقع', alert[2])
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,127 @@
+name: PostgreSQL database backup to R2
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/backup.yml
+  schedule:
+    - cron: '17 0 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: wasla-production-backup
+  cancel-in-progress: false
+jobs:
+  backup_and_restore:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production-backup
+    services:
+      restore-postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: wasla_restore
+          POSTGRES_PASSWORD: ci-restore-only
+          POSTGRES_DB: wasla_restore
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wasla_restore -d wasla_restore"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify required settings without revealing them
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          from scripts.backup_postgres import database_env, r2_settings
+          required = ['BACKUP_DATABASE_URL','R2_ENDPOINT_URL','R2_BUCKET','R2_PREFIX','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']
+          missing = [key for key in required if not os.environ.get(key)]
+          if missing: raise SystemExit('Backup not configured: ' + ', '.join(missing))
+          database_env(os.environ['BACKUP_DATABASE_URL'])
+          r2_settings()
+          PY
+      - name: Install the PostgreSQL 17 client from official PGDG repository
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nArchitectures: %s\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
+            "$VERSION_CODENAME" "$(dpkg --print-architecture)" |
+            sudo tee /etc/apt/sources.list.d/pgdg.sources >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          aws --version
+          AWS_PAGER='' aws s3api put-object --generate-cli-skeleton input | python -c 'import json,sys; assert "IfNoneMatch" in json.load(sys.stdin), "AWS CLI must support conditional PutObject"'
+      - name: Dump production, upload and verify R2 metadata
+        id: upload
+        env:
+          WASLA_BACKUP_WRITE_OUTPUTS: '1'
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python scripts/backup_postgres.py
+      - name: Download the exact R2 backup and restore into disposable PostgreSQL 17
+        env:
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: 'true'
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          RESTORE_OBJECT_KEY: ${{ steps.upload.outputs.object_key }}
+          EXPECTED_SHA256: ${{ steps.upload.outputs.sha256 }}
+          PGPASSWORD: ci-restore-only
+        run: |
+          set -euo pipefail
+          test -n "$RESTORE_OBJECT_KEY"
+          test -n "$EXPECTED_SHA256"
+          umask 077
+          aws --endpoint-url "$R2_ENDPOINT_URL" --region auto s3api get-object \
+            --bucket "$R2_BUCKET" --key "$RESTORE_OBJECT_KEY" \
+            "$RUNNER_TEMP/wasla-restore.dump" --output json >/dev/null
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+          path = Path(os.environ['RUNNER_TEMP']) / 'wasla-restore.dump'
+          with path.open('rb') as source:
+              signature = source.read(5)
+              source.seek(0)
+              sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+          if signature != b'PGDMP' or sha256 != os.environ['EXPECTED_SHA256']:
+              raise SystemExit('R2 downloaded archive integrity verification failed')
+          print('R2 object downloaded; bytes and SHA256 verified')
+          PY
+          pg_restore --list "$RUNNER_TEMP/wasla-restore.dump" >/dev/null
+          pg_restore --exit-on-error --no-owner --no-acl \
+            --host 127.0.0.1 --port 5432 --username wasla_restore \
+            --dbname wasla_restore "$RUNNER_TEMP/wasla-restore.dump" >/dev/null
+          restored_tables="$(psql --host 127.0.0.1 --port 5432 \
+            --username wasla_restore --dbname wasla_restore --tuples-only --no-align \
+            --command="SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")"
+          test "$restored_tables" -ge 19
+          echo "Isolated PostgreSQL 17 restore passed; tables verified: $restored_tables"
+          rm -f "$RUNNER_TEMP/wasla-restore.dump"
