@@ -25,7 +25,9 @@ class BackupSafety(unittest.TestCase):
         error = b'pg_dump: error: password authentication failed for user private-secret'
         self.assertEqual(failure_classification(error, 'db'), 'DB_AUTH')
         self.assertEqual(failure_classification(b'connection timed out', 'db'), 'DB_NETWORK_OR_TIMEOUT')
-        self.assertEqual(failure_classification(b'AccessDenied: private-token', 'r2'), 'R2_AUTH')
+        self.assertEqual(failure_classification(b'AccessDenied: private-token', 'r2'), 'R2_ACCESS_DENIED')
+        self.assertEqual(failure_classification(b'InvalidAccessKeyId: private-token', 'r2'), 'R2_ACCESS_KEY_UNRECOGNIZED')
+        self.assertEqual(failure_classification(b'SignatureDoesNotMatch: private-token', 'r2'), 'R2_SECRET_MISMATCH')
         self.assertEqual(failure_classification(b'unrecognized private error', 'r2'), 'R2_OTHER')
 
     def test_credentials_are_environment_only_and_tls_required(self):
