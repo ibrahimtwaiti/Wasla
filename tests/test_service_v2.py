@@ -247,3 +247,13 @@ class ServiceV2(unittest.TestCase):
             self.login('admin-b');self.assertEqual(self.client.get('/api/v2/attachments/'+mid+'/download').status_code,404)
             self.assertEqual(self.client.post('/api/v2/tickets/'+t['id']+'/attachments',json={'mime_type':'application/pdf','base64':base64.b64encode(raw).decode()}).status_code,404)
             storage.put_object.assert_called_once()
+
+    def test_template_parameter_count_and_provider_payload(self):
+        aid,t,*_=self.incoming(stamp=int(time.time())-90000)
+        with transaction() as db:
+            db.execute('INSERT INTO service_templates VALUES(?,?,?,?,?,?,?,?)',('param-template','a',aid,'hello_name','ar','APPROVED',json.dumps([{'type':'BODY','text':'Hello {{1}}'}]),int(time.time())))
+            db.execute('INSERT INTO service_consents VALUES(?,?,?,?,?,?,NULL)',('consent-template','a',t['identity_id'],'template_messages','test evidence',int(time.time())))
+        self.assertEqual(self.enqueue(t,kind='template',template='hello_name',language='ar').status_code,422)
+        r=self.enqueue(t,kind='template',template='hello_name',language='ar',parameters=['Customer']);self.assertEqual(r.status_code,201,r.text)
+        with patch('wasla.service.provider_request',return_value=httpx.Response(200,json={'messages':[{'id':'parameterized'}]})) as provider:
+            s.send_outbox();body=provider.call_args.args[3];self.assertEqual(body['template']['components'][0]['parameters'][0]['text'],'Customer')

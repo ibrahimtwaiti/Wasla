@@ -153,6 +153,9 @@ def enqueue(ident:str,data:dict,request:Request,u=Depends(user)):
     permit(u,'inbox'); key=operation(request); direction=choice(data,'direction',{'out','note'}); body=text(data,'body',1,4000)
     if '{{' in body or '}}' in body: raise HTTPException(422,'complete_saved_reply_fields')
     p={'kind':choice({**data,'kind':data.get('kind','text')},'kind',{'text','template','image','document','video'}),'template':text(data,'template',0,120),'language':text(data,'language',0,20),'attachment_id':text(data,'attachment_id',0,120)}
+    parameters=data.get('parameters',[])
+    if not isinstance(parameters,list) or len(parameters)>30 or any(not isinstance(v,str) or not 1<=len(v)<=1000 for v in parameters):raise HTTPException(422,'invalid_template_parameters')
+    p['parameters']=parameters
     fingerprint=hashlib.sha256(json.dumps({'ticket':ident,'body':body,'direction':direction,**p},sort_keys=True).encode()).hexdigest()
     with transaction() as db:
         t=get(db,'service_tickets',ident,u,True)

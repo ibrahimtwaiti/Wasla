@@ -95,7 +95,12 @@ def choose_agent(db, tid, config):
     available=config['available_agents']
     if not available: return None
     agents=rows(db,"SELECT u.id,COUNT(t.id) load FROM users u LEFT JOIN service_tickets t ON t.assignee_id=u.id AND t.status NOT IN ('closed','resolved') WHERE u.tenant_id=? AND u.active=1 AND u.role IN ('sales','admin','supervisor') GROUP BY u.id ORDER BY load,u.id",(tid,))
-    return next((a['id'] for a in agents if a['id'] in available and a['load']<config['max_active']), None)
+    for a in agents:
+        if a['id'] not in available:continue
+        if postgres():db.execute('SELECT id FROM users WHERE id=? FOR UPDATE',(a['id'],))
+        load=db.execute("SELECT count(*) FROM service_tickets WHERE assignee_id=? AND status NOT IN ('closed','resolved')",(a['id'],)).fetchone()[0]
+        if load<config['max_active']:return a['id']
+    return None
 
 def apply_status(db, aid, pid, status, stamp):
     if status not in RANK: return
@@ -159,8 +164,13 @@ def policy(db,a,ticket,payload):
     elif kind=='template':
         template=one(db,"SELECT * FROM service_templates WHERE account_id=? AND name=? AND language=? AND status='APPROVED' AND checked_at>?",(a['id'],payload.get('template'),payload.get('language'),int(time.time())-86400))
         if not template: raise HTTPException(409,'approved_recent_template_required')
-        if '{{' in template['components'] or any(c.get('type') not in {'BODY','FOOTER'} for c in json.loads(template['components'])):
-            raise HTTPException(409,'template_requires_unsupported_parameters')
+        components=json.loads(template['components'])
+        if any(c.get('type') not in {'BODY','FOOTER'} for c in components):
+            raise HTTPException(409,'template_requires_unsupported_components')
+        expected=sorted(set(int(n) for c in components if c.get('type')=='BODY' for n in re.findall(r'\{\{(\d+)\}\}',c.get('text',''))))
+        values=payload.get('parameters',[])
+        if expected!=list(range(1,len(values)+1)):raise HTTPException(422,'template_parameters_mismatch')
+
         if not one(db,'SELECT id FROM service_consents WHERE identity_id=? AND purpose=? AND revoked_at IS NULL',(ticket['identity_id'],'template_messages')):
             raise HTTPException(409,'template_consent_required')
     if kind in {'image','document'}:
@@ -193,11 +203,17 @@ def send_outbox():
         if a['channel']=='whatsapp':
             body={'messaging_product':'whatsapp','to':identity['provider_user_id'],'type':p['kind']}
             if p['kind']=='text': body['text']={'body':m['body']}
-            elif p['kind']=='template': body['template']={'name':p['template'],'language':{'code':p['language']}}
+            elif p['kind']=='template':
+                body['template']={'name':p['template'],'language':{'code':p['language']}}
+                if p.get('parameters'):body['template']['components']=[{'type':'body','parameters':[{'type':'text','text':v} for v in p['parameters']]}]
             else:
                 from .service_media import media_url
                 media=one(db,'SELECT * FROM service_media WHERE id=?',(p['attachment_id'],))
-                body[p['kind']]={'link':media_url(media),'caption':m['body']}
+                try:body[p['kind']]={'link':media_url(media),'caption':m['body']}
+                except HTTPException as exc:
+                    db.execute("UPDATE service_outbox SET state='blocked',error=? WHERE id=?",(str(exc.detail),o['id']))
+                    db.execute("UPDATE service_messages SET status='blocked' WHERE id=?",(m['id'],))
+                    return True
 
         else: body={'recipient':{'id':identity['provider_user_id']},'message':{'text':m['body']}}
         db.execute("UPDATE service_outbox SET state='sending',claimed_at=?,attempts=attempts+1 WHERE id=?",(clock,o['id']))

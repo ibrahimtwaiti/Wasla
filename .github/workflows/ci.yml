@@ -53,6 +53,17 @@ jobs:
           python -m wasla.cli init
           python -m unittest discover -s tests -p 'test_postgres.py' -v
 
+      - name: Restore V2 backup into a disposable database and compare every row
+        env:
+          PGPASSWORD: ci-disposable-only
+          WASLA_TEST_DATABASE_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
+          WASLA_RESTORE_TEST_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_restore_test
+        run: |
+          psql -h localhost -U wasla_test -d wasla_test -c 'CREATE DATABASE wasla_restore_test;'
+          docker exec ${{ job.services.postgres.id }} pg_dump -U wasla_test -d wasla_test -Fc > /tmp/wasla-ci-restore.dump
+          docker exec -i ${{ job.services.postgres.id }} pg_restore -U wasla_test -d wasla_restore_test --no-owner < /tmp/wasla-ci-restore.dump
+          python -m scripts.verify_restore
+
       - name: Exercise atomic SQLite to PostgreSQL import
         env:
           PGPASSWORD: ci-disposable-only

@@ -13,7 +13,7 @@ from .main import user, text
 from .security import permit
 from .service_api import router, get
 
-MAX_BYTES=5*1024*1024
+MAX_BYTES=2*1024*1024
 MIME={'image/png':b'\x89PNG\r\n\x1a\n','image/jpeg':b'\xff\xd8\xff','application/pdf':b'%PDF-'}
 
 def client():
@@ -26,7 +26,7 @@ def client():
     return boto3.client('s3',endpoint_url=endpoint,region_name='auto',aws_access_key_id=os.environ[names[2]],aws_secret_access_key=os.environ[names[3]])
 
 def validate(raw,mime):
-    if not raw or len(raw)>MAX_BYTES: raise HTTPException(413,'attachment_size_limit_5mb')
+    if not raw or len(raw)>MAX_BYTES: raise HTTPException(413,'attachment_size_limit_2mb')
     if mime not in MIME or not raw.startswith(MIME[mime]): raise HTTPException(422,'unsupported_or_mismatched_attachment_type')
 
 def scan(raw,mime):
@@ -51,7 +51,7 @@ def upload(ident:str,data:dict,u=Depends(user)):
     # Scope before decoding or scanning; attacker cannot use another tenant's attachment path.
     with transaction() as db:get(db,'service_tickets',ident,u)
     encoded=data.get('base64')
-    if not isinstance(encoded,str) or len(encoded)>MAX_BYTES*4//3+4:raise HTTPException(413,'attachment_size_limit_5mb')
+    if not isinstance(encoded,str) or len(encoded)>MAX_BYTES*4//3+4:raise HTTPException(413,'attachment_size_limit_2mb')
     try:raw=base64.b64decode(encoded,validate=True)
     except (binascii.Error,ValueError):raise HTTPException(422,'invalid_base64_attachment')
     validate(raw,mime);storage=client();checksum=scan(raw,mime);mid=uid();key='tenants/'+u['tenant_id']+'/attachments/'+mid
