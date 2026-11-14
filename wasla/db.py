@@ -91,6 +91,12 @@ def migrate():
                 for statement in script.split(';'):
                     if statement.strip():
                         conn.execute(statement)
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=3').fetchone() is None:
+                for statement in (ROOT / 'migrations/004_service_v2.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=4').fetchone() is None:
+                for statement in (ROOT / 'migrations/005_service_completion.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
 
 def initialize():
     if postgres():
@@ -99,6 +105,10 @@ def initialize():
                 raise RuntimeError('PostgreSQL migrations missing: python -m wasla.cli init')
             if not one(db, 'SELECT version FROM schema_migrations WHERE version=2'):
                 raise RuntimeError('Security migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=3'):
+                raise RuntimeError('V2 migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=4'):
+                raise RuntimeError('V2 completion migration missing: python -m wasla.cli init')
         return
     Path(path()).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path()) as db:
@@ -110,6 +120,10 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS session_activity(token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE, issued_at BIGINT NOT NULL,last_seen_at BIGINT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS retention_holds(entity_type TEXT NOT NULL,entity_id TEXT NOT NULL,reason TEXT NOT NULL,held_until TEXT,created_at TEXT NOT NULL,PRIMARY KEY(entity_type,entity_id))")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?)", (now(),))
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=3").fetchone():
+            db.executescript((ROOT / "migrations/004_service_v2.sql").read_text())
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=4").fetchone():
+            db.executescript((ROOT / "migrations/005_service_completion.sql").read_text())
         db.commit()
 
 def audit(db, user, action, entity, detail=''):

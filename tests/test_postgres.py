@@ -91,3 +91,40 @@ class PostgreSQLAcceptance(unittest.TestCase):
                     return client.post('/api/auth/setup',json=data,headers={'Origin':'http://localhost:8000'}).status_code
             with ThreadPoolExecutor(2) as pool: codes=list(pool.map(activate,range(2)))
             self.assertEqual(sorted(codes),[201,409])
+
+    def test_v2_durable_inbound_and_outbox_concurrency(self):
+        from wasla import service
+        from wasla.db import one
+        from unittest.mock import patch
+        import httpx,time
+        aid=uid();asset=uid()
+        with transaction() as db:
+            db.execute('INSERT INTO service_accounts(id,tenant_id,channel,provider_id,label,api_version,state,created_at) VALUES(?,?,?,?,?,?,?,?)',(aid,self.a,'whatsapp',asset,'PG test','v27.0','verified',now()))
+        payload={'object':'whatsapp_business_account','entry':[{'changes':[{'value':{'metadata':{'phone_number_id':asset},'messages':[{'id':'pg-v2-'+uid(),'from':'966500000001','timestamp':str(int(time.time())),'type':'text','text':{'body':'test'}}]}}]}]}
+        service.persist_events('whatsapp',payload);service.persist_events('whatsapp',payload)
+        with ThreadPoolExecutor(2) as pool:result=list(pool.map(lambda _:service.process_event(),range(2)))
+        self.assertEqual(sorted(result),[False,True])
+        with transaction() as db:
+            ticket=one(db,'SELECT * FROM service_tickets WHERE tenant_id=?',(self.a,));self.assertIsNotNone(ticket)
+        with TestClient(app) as client:
+            client.headers['Origin']='http://localhost:8000'
+            client.post('/api/auth/login',json={'email':self.email_a,'password':self.password});client.headers['X-CSRF-Token']=client.get('/api/me').json()['csrf']
+            with patch.dict(os.environ,{'WASLA_CHANNEL_'+aid.upper()+'_TOKEN':'test-only'}):
+                queued=client.post('/api/v2/tickets/'+ticket['id']+'/messages',json={'direction':'out','body':'test reply','version':ticket['version']},headers={'Idempotency-Key':uid()});self.assertEqual(queued.status_code,201,queued.text)
+                with patch('wasla.service.provider_request',return_value=httpx.Response(200,json={'messages':[{'id':'pg-out-'+uid()}]})) as provider:
+                    with ThreadPoolExecutor(2) as pool:list(pool.map(lambda _:service.send_outbox(),range(2)))
+                    provider.assert_called_once()
+        # Media claims use SKIP LOCKED and one clean object per message.
+        from wasla.service_media import process_media
+        from unittest.mock import MagicMock
+        with transaction() as db:
+            message=one(db,"SELECT id FROM service_messages WHERE ticket_id=? AND direction='in'",(ticket['id'],))
+            db.execute('INSERT INTO service_media_jobs(id,tenant_id,message_id,account_id,descriptor) VALUES(?,?,?,?,?)',(uid(),self.a,message['id'],aid,'{"id":"777"}'))
+        storage=MagicMock()
+        with patch.dict(os.environ,{'WASLA_MEDIA_BUCKET':'test'}),patch('wasla.service_media.client',return_value=storage),patch('wasla.service_media.fetch_provider_media',return_value=(b'fixture','image/png')),patch('wasla.service_media.scan',return_value='testhash'):
+            with ThreadPoolExecutor(2) as pool:results=list(pool.map(lambda _:process_media(),range(2)))
+            self.assertEqual(sorted(results),[False,True]);storage.put_object.assert_called_once()
+        with transaction() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM service_media WHERE ticket_id=?',(ticket['id'],)).fetchone()[0],1)
+            db.execute('INSERT INTO service_retention_policy VALUES(?,?,0,?,?)',(self.a,180,'CI disabled policy',now()))
+            db.execute('INSERT INTO service_channel_snapshots VALUES(?,?,?,?,?)',(aid,self.a,'{}','{}',now()))

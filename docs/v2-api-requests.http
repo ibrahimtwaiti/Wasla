@@ -1,0 +1,32 @@
+# Local/test only. Set baseUrl, csrf and session cookie in your private HTTP client.
+# Never commit real cookies, API tokens, customer text or provider IDs.
+@baseUrl = http://127.0.0.1:8000
+
+### Readiness (authenticated Wasla session)
+GET {{baseUrl}}/api/v2/readiness
+
+### Ticket cohort report
+GET {{baseUrl}}/api/v2/reports?channel=whatsapp
+
+### Retention dry run (does not delete)
+GET {{baseUrl}}/api/v2/retention
+
+### Register an account only after substituting the real asset ID/version
+POST {{baseUrl}}/api/v2/accounts
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf}}
+Content-Type: application/json
+
+{"channel":"whatsapp","provider_id":"<PHONE_NUMBER_ID>","api_version":"<VERIFIED_VERSION>","label":"Test account"}
+
+### Queue an INTERNAL note; no customer send
+POST {{baseUrl}}/api/v2/tickets/{{ticket_id}}/messages
+Origin: {{baseUrl}}
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: {{unique_request_key}}
+Content-Type: application/json
+
+{"version":1,"direction":"note","body":"Test internal note"}
+
+### Retrieve evidence-based reply suggestions (does not send)
+GET {{baseUrl}}/api/v2/tickets/{{ticket_id}}/suggestions
