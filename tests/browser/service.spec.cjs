@@ -12,6 +12,8 @@ for(const lang of ['ar','en']){
   await page.goto('/app/channels?lang='+lang);await expect(page.locator('.service-accounts .card')).toHaveCount(4);await expect(page.locator('#main')).toContainText('QA WhatsApp');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBeTruthy();
   await page.goto('/app/reports?lang='+lang);await expect(page.locator('.service-kpis')).toBeVisible();await expect(page.locator('#main')).toContainText('CSAT');
+  await page.locator('#service-report-filters [name=channel]').selectOption('whatsapp');await page.locator('#service-report-filters button[type=submit]').click();await expect(page.locator('#service-report-filters [name=channel]')).toHaveValue('whatsapp');
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBeTruthy();
   expect(errors).toEqual([]);
  });
 }

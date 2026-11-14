@@ -27,7 +27,7 @@ def capabilities(channel):
     return {'channel': channel, 'messaging': channel in {'whatsapp','instagram'},
             'types': ['text','template','image','document'] if channel=='whatsapp' else ['text'] if channel=='instagram' else [],
             'reply_window_hours': 24 if channel in {'whatsapp','instagram'} else 48 if channel=='tiktok' else None,
-            'delivery_events': channel=='whatsapp', 'media_download': False,
+            'delivery_events': channel=='whatsapp', 'media_download': channel in {'whatsapp','instagram'},
             'reason': 'requires_business_messaging_approval_and_provider_contract' if channel=='tiktok' else
             'public_profile_or_referral_only_not_customer_dm' if channel=='snapchat' else 'requires_verified_account'}
 
@@ -62,7 +62,7 @@ def normalize(channel, payload):
                 for msg in value.get('messages', []):
                     mid=str(msg['id']); stamp=int(msg['timestamp']); kind=msg.get('type','unsupported')
                     yield asset, 'message:'+mid, {'type':'message','id':mid,'user':str(msg['from']),
-                        'at':stamp,'kind':kind,'body':msg.get('text',{}).get('body','') if kind=='text' else '[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]', 'direction':'in'}
+                        'at':stamp,'kind':kind,'body':msg.get('text',{}).get('body','') if kind=='text' else '[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]', 'direction':'in', 'media':({'id':str(msg[kind].get('id','')), 'mime_type':msg[kind].get('mime_type',''), 'sha256':msg[kind].get('sha256','')} if kind in {'image','document'} else None)}
                 for status in value.get('statuses', []):
                     yield asset, f"status:{status['id']}:{status['status']}:{status['timestamp']}", {
                         'type':'status','id':str(status['id']),'status':status['status'],'at':int(status['timestamp'])}
@@ -76,7 +76,7 @@ def normalize(channel, payload):
                 mid=str(msg['mid']); echo=bool(msg.get('is_echo'))
                 yield asset, 'message:'+mid, {'type':'message','id':mid,'user':str(item['recipient' if echo else 'sender']['id']),
                     'at':int(item['timestamp'])//1000,'kind':'text' if 'text' in msg else 'unsupported',
-                    'body':msg.get('text','[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]'),'direction':'out' if echo else 'in'}
+                    'body':msg.get('text','[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]'),'direction':'out' if echo else 'in', 'media':next(({'url':x.get('payload',{}).get('url','')} for x in msg.get('attachments',[]) if x.get('type')=='image'),None)}
     else: raise ValueError('unsupported_channel')
 
 def persist_events(channel, payload):
@@ -128,7 +128,7 @@ def process_event():
                 if not identity:
                     ident=uid(); db.execute('INSERT INTO service_identities(id,tenant_id,account_id,provider_user_id,name,created_at) VALUES(?,?,?,?,?,?)',(ident,tid,aid,e['user'],e['user'][:200],now()))
                 else: ident=identity['id']
-                ticket=one(db,'SELECT * FROM service_tickets WHERE identity_id=? ORDER BY created_at DESC LIMIT 1',(ident,))
+                ticket=one(db,'SELECT * FROM service_tickets WHERE identity_id=? ORDER BY created_at DESC LIMIT 1'+(' FOR UPDATE' if postgres() else ''),(ident,))
                 stamp=max(0,min(e['at'],clock)); config=settings(db,tid)
                 if not ticket:
                     ticket_id=uid(); category='complaint' if 'شكوى' in e['body'] else 'booking' if any(w in e['body'] for w in ('موعد','حجز')) else 'general'
@@ -136,11 +136,17 @@ def process_event():
                     db.execute('INSERT INTO service_tickets(id,tenant_id,identity_id,category,team,source,assignee_id,last_customer_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
                         (ticket_id,tid,ident,category,team,a['channel'],choose_agent(db,tid,config),stamp,stamp,clock))
                 else:
-                    ticket_id=ticket['id']; new_state='new' if ticket['status'] in {'closed','resolved'} and stamp>ticket['last_customer_at'] else ticket['status']
+                    ticket_id=ticket['id']
+                    db.execute('DELETE FROM service_redactions WHERE ticket_id=?',(ticket_id,))
+                    new_state='new' if ticket['status'] in {'closed','resolved'} and stamp>ticket['last_customer_at'] else ticket['status']
                     db.execute('UPDATE service_tickets SET last_customer_at=?,status=?,version=version+1,updated_at=?,resolved_at=? WHERE id=?',
                         (max(ticket['last_customer_at'],stamp),new_state,clock,None if new_state=='new' else ticket['resolved_at'],ticket_id))
+                message_id=uid()
                 db.execute('INSERT INTO service_messages(id,tenant_id,ticket_id,account_id,provider_id,direction,kind,body,status,occurred_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                           (uid(),tid,ticket_id,aid,e['id'],'in',e['kind'],str(e['body'])[:4000],'received',stamp,clock))
+                           (message_id,tid,ticket_id,aid,e['id'],'in',e['kind'],str(e['body'])[:4000],'received',stamp,clock))
+                if e.get('media'):
+                    db.execute('INSERT INTO service_media_jobs(id,tenant_id,message_id,account_id,descriptor) VALUES(?,?,?,?,?)',(uid(),tid,message_id,aid,json.dumps(e['media'])))
+                    db.execute("UPDATE service_messages SET body='[مرفق قيد الجلب والفحص]' WHERE id=?",(message_id,))
                 db.execute('UPDATE service_accounts SET last_inbound_at=? WHERE id=?',(now(),aid))
             db.execute("UPDATE service_events SET state='processed',processed_at=?,error='' WHERE id=?",(clock,eid))
         return True
@@ -164,13 +170,8 @@ def policy(db,a,ticket,payload):
     elif kind=='template':
         template=one(db,"SELECT * FROM service_templates WHERE account_id=? AND name=? AND language=? AND status='APPROVED' AND checked_at>?",(a['id'],payload.get('template'),payload.get('language'),int(time.time())-86400))
         if not template: raise HTTPException(409,'approved_recent_template_required')
-        components=json.loads(template['components'])
-        if any(c.get('type') not in {'BODY','FOOTER'} for c in components):
-            raise HTTPException(409,'template_requires_unsupported_components')
-        expected=sorted(set(int(n) for c in components if c.get('type')=='BODY' for n in re.findall(r'\{\{(\d+)\}\}',c.get('text',''))))
-        values=payload.get('parameters',[])
-        if expected!=list(range(1,len(values)+1)):raise HTTPException(422,'template_parameters_mismatch')
-
+        from .service_templates import components
+        components(db,json.loads(template['components']),payload,ticket)
         if not one(db,'SELECT id FROM service_consents WHERE identity_id=? AND purpose=? AND revoked_at IS NULL',(ticket['identity_id'],'template_messages')):
             raise HTTPException(409,'template_consent_required')
     if kind in {'image','document'}:
@@ -205,7 +206,15 @@ def send_outbox():
             if p['kind']=='text': body['text']={'body':m['body']}
             elif p['kind']=='template':
                 body['template']={'name':p['template'],'language':{'code':p['language']}}
-                if p.get('parameters'):body['template']['components']=[{'type':'body','parameters':[{'type':'text','text':v} for v in p['parameters']]}]
+                from .service_templates import components
+                template=one(db,'SELECT components FROM service_templates WHERE account_id=? AND name=? AND language=?',(a['id'],p['template'],p['language']))
+                try:
+                    parts=components(db,json.loads(template['components']),p,t,True)
+                    if parts:body['template']['components']=parts
+                except HTTPException as exc:
+                    db.execute("UPDATE service_outbox SET state='blocked',error=? WHERE id=?",(str(exc.detail),o['id']))
+                    db.execute("UPDATE service_messages SET status='blocked' WHERE id=?",(m['id'],))
+                    return True
             else:
                 from .service_media import media_url
                 media=one(db,'SELECT * FROM service_media WHERE id=?',(p['attachment_id'],))
@@ -246,7 +255,7 @@ def send_outbox():
     return True
 
 def drain(max_events=20, max_seconds=18):
-    result={'inbound':0,'outbound':0}; end=time.monotonic()+max_seconds
+    result={'inbound':0,'outbound':0,'media':0}; end=time.monotonic()+max_seconds
     for _ in range(max_events):
         if time.monotonic()>=end: break
         worked=process_event()
@@ -255,7 +264,10 @@ def drain(max_events=20, max_seconds=18):
             sent=send_outbox()
             if sent: result['outbound']+=1
         else: sent=False
-        if not worked and not sent: break
+        from .service_media import process_media
+        media=process_media() if time.monotonic()<end else False
+        if media: result['media']+=1
+        if not worked and not sent and not media: break
     return result
 
 def business_seconds(start,end,config):

@@ -94,6 +94,9 @@ def migrate():
             if conn.execute('SELECT version FROM schema_migrations WHERE version=3').fetchone() is None:
                 for statement in (ROOT / 'migrations/004_service_v2.sql').read_text().split(';'):
                     if statement.strip(): conn.execute(statement)
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=4').fetchone() is None:
+                for statement in (ROOT / 'migrations/005_service_completion.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
 
 def initialize():
     if postgres():
@@ -104,6 +107,8 @@ def initialize():
                 raise RuntimeError('Security migration missing: python -m wasla.cli init')
             if not one(db, 'SELECT version FROM schema_migrations WHERE version=3'):
                 raise RuntimeError('V2 migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=4'):
+                raise RuntimeError('V2 completion migration missing: python -m wasla.cli init')
         return
     Path(path()).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path()) as db:
@@ -117,6 +122,8 @@ def initialize():
         db.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?)", (now(),))
         if not db.execute("SELECT version FROM schema_migrations WHERE version=3").fetchone():
             db.executescript((ROOT / "migrations/004_service_v2.sql").read_text())
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=4").fetchone():
+            db.executescript((ROOT / "migrations/005_service_completion.sql").read_text())
         db.commit()
 
 def audit(db, user, action, entity, detail=''):

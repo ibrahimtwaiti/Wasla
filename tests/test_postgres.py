@@ -114,3 +114,17 @@ class PostgreSQLAcceptance(unittest.TestCase):
                 with patch('wasla.service.provider_request',return_value=httpx.Response(200,json={'messages':[{'id':'pg-out-'+uid()}]})) as provider:
                     with ThreadPoolExecutor(2) as pool:list(pool.map(lambda _:service.send_outbox(),range(2)))
                     provider.assert_called_once()
+        # Media claims use SKIP LOCKED and one clean object per message.
+        from wasla.service_media import process_media
+        from unittest.mock import MagicMock
+        with transaction() as db:
+            message=one(db,"SELECT id FROM service_messages WHERE ticket_id=? AND direction='in'",(ticket['id'],))
+            db.execute('INSERT INTO service_media_jobs(id,tenant_id,message_id,account_id,descriptor) VALUES(?,?,?,?,?)',(uid(),self.a,message['id'],aid,'{"id":"777"}'))
+        storage=MagicMock()
+        with patch.dict(os.environ,{'WASLA_MEDIA_BUCKET':'test'}),patch('wasla.service_media.client',return_value=storage),patch('wasla.service_media.fetch_provider_media',return_value=(b'fixture','image/png')),patch('wasla.service_media.scan',return_value='testhash'):
+            with ThreadPoolExecutor(2) as pool:results=list(pool.map(lambda _:process_media(),range(2)))
+            self.assertEqual(sorted(results),[False,True]);storage.put_object.assert_called_once()
+        with transaction() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM service_media WHERE ticket_id=?',(ticket['id'],)).fetchone()[0],1)
+            db.execute('INSERT INTO service_retention_policy VALUES(?,?,0,?,?)',(self.a,180,'CI disabled policy',now()))
+            db.execute('INSERT INTO service_channel_snapshots VALUES(?,?,?,?,?)',(aid,self.a,'{}','{}',now()))

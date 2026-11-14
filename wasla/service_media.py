@@ -74,3 +74,78 @@ def download(ident:str,u=Depends(user)):
     with transaction() as db:
         m=get(db,'service_media',ident,u);get(db,'service_tickets',m['ticket_id'],u);audit(db,u,'service.attachment.downloaded',ident)
     return {'url':media_url(m),'expires_in':120}
+
+def fetch_provider_media(account, descriptor):
+    """Fetch only a signed-event attachment from provider-controlled HTTPS hosts."""
+    import ipaddress
+    import socket
+    from . import service as s
+    headers={}; expected=''; url=descriptor.get('url','')
+    if account['channel']=='whatsapp':
+        mid=descriptor.get('id','')
+        if not re.fullmatch(r'[0-9]+',mid):raise HTTPException(422,'invalid_provider_media_id')
+        response=s.provider_request({**account,'provider_id':mid},'GET','?phone_number_id='+account['provider_id'])
+        if response.status_code!=200:raise HTTPException(502,'provider_media_metadata_unavailable')
+        meta=response.json();url=meta.get('url','');expected=meta.get('sha256','')
+        if str(meta.get('id'))!=mid:raise HTTPException(422,'provider_media_id_mismatch')
+        if int(meta.get('file_size',0))>MAX_BYTES:raise HTTPException(413,'attachment_size_limit_2mb')
+        if descriptor.get('sha256') and expected!=descriptor['sha256']:raise HTTPException(422,'provider_media_checksum_mismatch')
+        headers={'Authorization':'Bearer '+s.token(account)}
+    host=urlparse(url); name=host.hostname or ''
+    allowed=(name=='lookaside.fbsbx.com') if account['channel']=='whatsapp' else any(name.endswith('.'+d) for d in ('cdninstagram.com','fbcdn.net','fbsbx.com'))
+    if not allowed or host.scheme!='https' or host.port not in (None,443) or host.username or host.password:
+        raise HTTPException(422,'untrusted_provider_media_url')
+    addresses=socket.getaddrinfo(name,443,type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):raise HTTPException(422,'nonpublic_provider_media_host')
+    chunks=[];size=0
+    with httpx.stream('GET',url,headers=headers,timeout=httpx.Timeout(20,connect=5),follow_redirects=False) as response:
+        if response.status_code!=200:raise HTTPException(502,'provider_media_download_failed')
+        mime=response.headers.get('content-type','').split(';')[0].lower()
+        for chunk in response.iter_bytes():
+            size+=len(chunk)
+            if size>MAX_BYTES:raise HTTPException(413,'attachment_size_limit_2mb')
+            chunks.append(chunk)
+    raw=b''.join(chunks);validate(raw,mime)
+    digest=hashlib.sha256(raw).digest()
+    if expected and expected not in {digest.hex(),base64.b64encode(digest).decode()}:raise HTTPException(422,'provider_media_checksum_mismatch')
+    return raw,mime
+
+def process_media():
+    from .db import one, postgres
+    job=None
+    try:
+        with transaction() as db:
+            job=one(db,"SELECT * FROM service_media_jobs WHERE state='pending' AND next_attempt<=? ORDER BY id LIMIT 1"+(' FOR UPDATE SKIP LOCKED' if postgres() else ''),(int(time.time()),))
+            if not job:return False
+            m=one(db,'SELECT * FROM service_messages WHERE id=?',(job['message_id'],))
+            # Serialize redaction and media downloads on the ticket.
+            db.execute('SELECT id FROM service_tickets WHERE id=?'+(' FOR UPDATE' if postgres() else ''),(m['ticket_id'],))
+            a=one(db,"SELECT a.* FROM service_accounts a JOIN tenants t ON t.id=a.tenant_id WHERE a.id=? AND a.state!='disconnected' AND t.status!='suspended'",(job['account_id'],))
+            if not a:raise HTTPException(409,'account_unavailable')
+            storage=client()
+            raw,mime=fetch_provider_media(a,__import__('json').loads(job['descriptor']));checksum=scan(raw,mime)
+            key='tenants/'+job['tenant_id']+'/attachments/'+job['id']
+            storage.put_object(Bucket=os.environ['WASLA_MEDIA_BUCKET'],Key=key,Body=raw,ContentType=mime,Metadata={'sha256':checksum,'scan':'clean'})
+            db.execute('INSERT INTO service_media VALUES(?,?,?,?,?,?,?,?,?)',(job['id'],job['tenant_id'],m['ticket_id'],key,mime,len(raw),checksum,'clean',int(time.time())))
+            db.execute("UPDATE service_media_jobs SET state='complete',media_id=?,descriptor='{}',error='' WHERE id=?",(job['id'],job['id']))
+            db.execute("UPDATE service_messages SET body='[مرفق جاهز للتنزيل الآمن]' WHERE id=?",(m['id'],))
+            db.execute('UPDATE service_tickets SET version=version+1 WHERE id=?',(m['ticket_id'],))
+        return True
+    except Exception as exc:
+        if not job:return False
+        permanent=isinstance(exc,HTTPException) and exc.status_code in {409,413,422}
+        code=str(exc.detail) if isinstance(exc,HTTPException) else 'provider_media_processing_failed'
+        with transaction() as db:
+            state='rejected' if permanent else 'dead' if job['attempts']>=4 else 'pending'
+            db.execute('UPDATE service_media_jobs SET state=?,attempts=attempts+1,next_attempt=?,error=? WHERE id=? AND state=\'pending\'',(state,int(time.time())+min(3600,30*2**job['attempts']),code,job['id']))
+            db.execute('UPDATE service_messages SET body=? WHERE id=?',('[تعذر إتاحة المرفق: '+code+']',job['message_id']))
+        return True
+
+@router.post('/api/v2/media-jobs/{ident}/retry')
+def retry_media(ident:str,u=Depends(user)):
+    permit(u,'settings')
+    with transaction() as db:
+        j=get(db,'service_media_jobs',ident,u)
+        if j['state']!='dead':raise HTTPException(409,'media_job_not_retryable')
+        db.execute("UPDATE service_media_jobs SET state='pending',attempts=0,next_attempt=0 WHERE id=?",(ident,));audit(db,u,'service.media.retried',ident)
+    return {'ok':True}

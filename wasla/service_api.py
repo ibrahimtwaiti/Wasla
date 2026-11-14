@@ -145,6 +145,9 @@ def update_ticket(ident:str,data:dict,u=Depends(user)):
             automation_paused=?,resolved_at=?,first_resolved_at=COALESCE(first_resolved_at,?),version=version+1,updated_at=? WHERE id=?''',
             (status,owner,choice(data,'priority',{'low','normal','high','urgent'}),text(data,'category',1,80),text(data,'team',1,80),text(data,'branch',0,80),
              choice(data,'language',{'ar','en'}),text(data,'summary',0,2000),resolution,1 if owner else t['automation_paused'],resolved,resolved,stamp,ident))
+        followup=data.get('followup_at',t.get('followup_at'))
+        if followup is not None and (type(followup) is not int or not 0<=followup<=4102444800):raise HTTPException(422,'invalid_followup_at')
+        db.execute('UPDATE service_tickets SET next_action=?,followup_at=?,campaign=? WHERE id=?',(text({**t,**data},'next_action',0,1000),followup,text({**t,**data},'campaign',0,120),ident))
         audit(db,u,'service.ticket.updated',ident,status)
     return {'ok':True,'version':t['version']+1}
 
@@ -156,6 +159,9 @@ def enqueue(ident:str,data:dict,request:Request,u=Depends(user)):
     parameters=data.get('parameters',[])
     if not isinstance(parameters,list) or len(parameters)>30 or any(not isinstance(v,str) or not 1<=len(v)<=1000 for v in parameters):raise HTTPException(422,'invalid_template_parameters')
     p['parameters']=parameters
+    p['header_parameters']=data.get('header_parameters',[])
+    p['header_attachment_id']=text(data,'header_attachment_id',0,120)
+    p['button_parameters']=data.get('button_parameters',{})
     fingerprint=hashlib.sha256(json.dumps({'ticket':ident,'body':body,'direction':direction,**p},sort_keys=True).encode()).hexdigest()
     with transaction() as db:
         t=get(db,'service_tickets',ident,u,True)
@@ -252,11 +258,10 @@ def sync_templates(ident:str,data:dict,u=Depends(user)):
     # Prove the business-account relationship before accepting its templates.
     try:
         business={**a,'provider_id':waba}
-        phones=s.provider_request(business,'GET','/phone_numbers?limit=100').json().get('data',[])
+        from .service_templates import pages
+        phones=pages(business,'phone_numbers')
         if not any(str(p.get('id'))==a['provider_id'] for p in phones): raise HTTPException(409,'business_account_relationship_not_verified')
-        response=s.provider_request(business,'GET','/message_templates?limit=100')
-        if response.status_code!=200: raise HTTPException(409,'template_sync_failed')
-        result=response.json()
+        result={'data':pages(business,'message_templates')}
     except HTTPException: raise
     except Exception: raise HTTPException(502,'template_sync_failed')
     with transaction() as db:
@@ -275,6 +280,8 @@ def operations(u=Depends(user)):
         return {'inbound':rows(db,'SELECT e.state,count(*) count FROM service_events e JOIN service_accounts a ON a.id=e.account_id WHERE a.tenant_id=? GROUP BY e.state',(u['tenant_id'],)),
             'outbound':rows(db,'SELECT state,count(*) count FROM service_outbox WHERE tenant_id=? GROUP BY state',(u['tenant_id'],)),
             'review':rows(db,"SELECT id,state,error,attempts,created_at FROM service_outbox WHERE tenant_id=? AND state IN ('unknown','blocked','dead','failed') ORDER BY created_at DESC LIMIT 100",(u['tenant_id'],)),
+            'overdue_followups':rows(db,"SELECT id,priority,followup_at FROM service_tickets WHERE tenant_id=? AND status NOT IN ('resolved','closed') AND followup_at<? ORDER BY followup_at LIMIT 100",(u['tenant_id'],int(time.time()))),
+            'media_jobs':rows(db,"SELECT id,state,error,attempts FROM service_media_jobs WHERE tenant_id=? AND state!='complete'",(u['tenant_id'],)),
             'dead_events':rows(db,"SELECT e.id,e.error,e.attempts FROM service_events e JOIN service_accounts a ON a.id=e.account_id WHERE a.tenant_id=? AND e.state='dead'",(u['tenant_id'],))}
 
 @router.post('/api/v2/events/{ident}/retry')
@@ -308,11 +315,11 @@ def rating(ident:str,data:dict,u=Depends(user)):
     return {'ok':True}
 
 @router.get('/api/v2/reports')
-def reports(start:int=0,end:int=0,channel:str='',team:str='',branch:str='',agent:str='',category:str='',priority:str='',u=Depends(user)):
+def reports(start:int=0,end:int=0,channel:str='',team:str='',branch:str='',agent:str='',category:str='',priority:str='',campaign:str='',u=Depends(user)):
     permit(u,'reports'); end=end or int(time.time()); start=start or end-30*86400
     if start<0 or end<=start or end-start>366*86400: raise HTTPException(422,'report_range_maximum_366_days')
     sql='SELECT t.* FROM service_tickets t JOIN service_identities i ON i.id=t.identity_id JOIN service_accounts a ON a.id=i.account_id WHERE t.tenant_id=? AND t.created_at>=? AND t.created_at<=?'; args=[u['tenant_id'],start,end]
-    for value,column in [(channel,'a.channel'),(team,'t.team'),(branch,'t.branch'),(agent,'t.assignee_id'),(category,'t.category'),(priority,'t.priority')]:
+    for value,column in [(channel,'a.channel'),(team,'t.team'),(branch,'t.branch'),(agent,'t.assignee_id'),(category,'t.category'),(priority,'t.priority'),(campaign,'t.campaign')]:
         if value: sql+=' AND '+column+'=?'; args.append(value)
     with transaction() as db:
         data=rows(db,sql,args); config=s.settings(db,u['tenant_id']); ids={t['id'] for t in data}

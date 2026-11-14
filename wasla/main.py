@@ -34,7 +34,7 @@ async def lifespan(app):
     initialize()
     yield
 
-app=FastAPI(title='Wasla API',version='2.0.0-rc.1',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Wasla API',version='2.0.0-rc.2',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.middleware('http')
 async def protect(request, call_next):
@@ -141,7 +141,7 @@ def valid_date(value):
 @app.get('/api/health')
 def health():
     with transaction() as db: db.execute('SELECT 1')
-    return {'status':'ok','version':'2.0.0-rc.1'}
+    return {'status':'ok','version':'2.0.0-rc.2'}
 
 @app.get('/api/catalog')
 def catalog(lang: str = "ar"):
@@ -594,7 +594,7 @@ def sitemap():
     return Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls+'</urlset>',media_type='application/xml')
 
 from .service_api import router as service_router
-from . import service_oauth, service_media
+from . import service_oauth, service_media, service_lifecycle, service_channels
 app.include_router(service_router)
 
 app.mount('/static' ,StaticFiles(directory=STATIC),name='static')
