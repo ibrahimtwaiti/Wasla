@@ -1,4 +1,4 @@
-name: V1 checks
+name: Wasla checks
 on:
   push:
   pull_request:
@@ -19,6 +19,8 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall -q wasla scripts
       - run: node --check wasla/static/app.js
+      - run: node --check wasla/static/service.js
+      - run: node --check wasla/static/service-oauth.js
       - run: python -m unittest discover -s tests -v
 
   postgres:

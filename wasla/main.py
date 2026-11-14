@@ -34,12 +34,12 @@ async def lifespan(app):
     initialize()
     yield
 
-app=FastAPI(title='Wasla API',version='1.0.0',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Wasla API',version='2.0.0-rc.1',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.middleware('http')
 async def protect(request, call_next):
     if request.method in {'POST','PATCH','PUT','DELETE'}:
-        if len(await request.body())>(2200000 if request.url.path=='/api/admin/brand' else 65536):
+        if len(await request.body())>(8*1024*1024 if request.url.path.startswith('/api/v2/tickets/') and request.url.path.endswith('/attachments') else 2200000 if request.url.path=='/api/admin/brand' else 65536):
             return JSONResponse({'detail':'حجم الطلب أكبر من المسموح'},413)
         if not (request.url.path.startswith('/api/webhooks/') or request.url.path == '/api/internal/drain-webhooks'):
             origin=('https://' + request.headers.get('host','') if os.getenv('VERCEL_ENV') in ('preview','production') else os.getenv('WASLA_ORIGIN','http://localhost:8000'))
@@ -141,7 +141,7 @@ def valid_date(value):
 @app.get('/api/health')
 def health():
     with transaction() as db: db.execute('SELECT 1')
-    return {'status':'ok','version':'1.0.0'}
+    return {'status':'ok','version':'2.0.0-rc.1'}
 
 @app.get('/api/catalog')
 def catalog(lang: str = "ar"):
@@ -558,7 +558,8 @@ def drain_webhooks(request:Request):
     if len(secret)<32 or not hmac.compare_digest(request.headers.get('Authorization',''),'Bearer '+secret):
         raise HTTPException(401,'Unauthorized')
     from .worker import drain
-    return {'processed':drain(max_events=20,max_seconds=20)}
+    from .service import drain as drain_service
+    return {'processed':drain(max_events=10,max_seconds=5), 'service':drain_service(max_events=10,max_seconds=18)}
 
 @app.get('/api/webhooks/whatsapp')
 def verify_webhook(request:Request):
@@ -591,6 +592,10 @@ def sitemap():
     paths=['/','/services','/platform','/how-it-works','/about','/faq','/request','/privacy','/terms']+['/services/'+s['id'] for s in SERVICES]
     urls=''.join('<url><loc>'+html.escape(origin+p+suffix)+'</loc></url>' for p in paths for suffix in ['', '?lang=en'])
     return Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls+'</urlset>',media_type='application/xml')
+
+from .service_api import router as service_router
+from . import service_oauth, service_media
+app.include_router(service_router)
 
 app.mount('/static' ,StaticFiles(directory=STATIC),name='static')
 
