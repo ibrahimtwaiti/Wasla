@@ -16,3 +16,6 @@ certifi==2026.10.19
 click==8.4.2
 annotated-doc==0.0.5
 psycopg[binary]>=3.2.10,<4
+
+cryptography>=46,<51
+boto3>=1.40,<2

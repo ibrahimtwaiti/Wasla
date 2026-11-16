@@ -1,0 +1,15 @@
+const {test,expect}=require('@playwright/test');
+for(const lang of ['ar','en'])test(`Provider integration console ${lang}`,async({page})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('/login?lang='+lang);await page.locator('[name=email]').fill('ui@example.test');await page.locator('[name=password]').fill('ui-only-long-password');await page.locator('button[type=submit]').click();await page.waitForURL('**/app');
+ await page.goto('/app/integrations?lang='+lang);await expect(page.locator('#integration-add')).toBeVisible();
+ await page.locator('#integration-apps').click();await page.locator('#dialog [name=META_VERIFY_TOKEN]').fill('test-ui-token-long-enough');await page.locator('#dialog button[type=submit]').click();await expect(page.locator('#dialog')).not.toBeVisible();
+ await page.locator('#integration-apps').click();await expect(page.locator('#dialog [name=META_VERIFY_TOKEN]')).toHaveValue('');await page.locator('#cancel-dialog').click();
+ await page.locator('#integration-add').click();await page.locator('#dialog [name=label]').fill('Provider UI '+lang);await page.locator('#dialog [name=provider_id]').fill('qa'+Date.now());await page.locator('#dialog [name=api_version]').fill('v27.0');await page.locator('#dialog [name=access_token]').fill('synthetic-ui-account-token');await page.locator('#dialog button[type=submit]').click();await expect(page.locator('#dialog')).not.toBeVisible();
+ const row=page.locator('tr').filter({hasText:'Provider UI '+lang});await expect(row).toBeVisible();await row.locator('button').click();await expect(page.locator('#dialog [name=access_token]')).toHaveValue('');await page.locator('#dialog [name=label]').fill('Updated UI '+lang);await page.locator('#dialog button[type=submit]').click();await expect(page.locator('#dialog')).not.toBeVisible();
+ await page.locator('[name=workspace_filter]').selectOption({index:1});await expect(page.locator('#integration-diagnostics')).toBeVisible();
+ await page.locator('#integration-workspace').click();await page.locator('#dialog [name=holidays]').fill('2026-12-01');await page.locator('#dialog [name=workday][value="4"]').check();await page.locator('#dialog [name=available_agent]').first().check();await page.locator('#dialog button[type=submit]').click();await expect(page.locator('#dialog')).not.toBeVisible();
+ await page.locator('#integration-workspace').click();await expect(page.locator('#dialog [name=holidays]')).toHaveValue('2026-12-01');await expect(page.locator('#dialog [name=workday][value="4"]')).toBeChecked();await expect(page.locator('#dialog [name=available_agent]').first()).toBeChecked();await page.locator('#cancel-dialog').click();
+ await page.locator('#integration-diagnostics').click();await expect(page.locator('#integration-diagnostics-panel h2')).toBeVisible();
+ await expect(page.locator('#main')).toContainText('Updated UI '+lang);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBeTruthy();expect(errors).toEqual([]);
+});
