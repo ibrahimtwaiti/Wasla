@@ -39,7 +39,6 @@ def permit(user, permission):
 def limit(db, key, maximum=10, seconds=600):
     current=int(time.time())
     db.execute('DELETE FROM rate_limits WHERE expires_at < ?', (current,))
-    record=db.execute('SELECT count FROM rate_limits WHERE key=?',(key,)).fetchone()
-    if record and record[0]>=maximum:
+    changed=db.execute('INSERT INTO rate_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=rate_limits.count+1 WHERE rate_limits.count<?', (key,current+seconds,maximum)).rowcount
+    if changed!=1:
         raise HTTPException(429,'طلبات كثيرة؛ يرجى المحاولة لاحقًا')
-    db.execute('INSERT INTO rate_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=rate_limits.count+excluded.count', (key,current+seconds))

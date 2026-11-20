@@ -1,0 +1,6 @@
+CREATE TABLE meta_signup_sessions(state_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES tenants(id),user_id TEXT NOT NULL REFERENCES users(id),session_hash TEXT NOT NULL,app_id TEXT NOT NULL,config_id TEXT NOT NULL,api_version TEXT NOT NULL,expires_at BIGINT NOT NULL,consumed_at BIGINT);
+CREATE TABLE meta_business_accounts(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES tenants(id),created_at TEXT NOT NULL,UNIQUE(id,tenant_id));
+CREATE TABLE meta_connections(account_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,business_account_id TEXT NOT NULL,subscription_state TEXT NOT NULL DEFAULT 'pending',registration_state TEXT NOT NULL DEFAULT 'pending',connected_at TEXT NOT NULL,FOREIGN KEY(account_id,tenant_id) REFERENCES service_accounts(id,tenant_id),FOREIGN KEY(business_account_id,tenant_id) REFERENCES meta_business_accounts(id,tenant_id));
+CREATE TABLE meta_api_usage(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES tenants(id),operation TEXT NOT NULL,status INTEGER NOT NULL,error_code TEXT NOT NULL,duration_ms INTEGER NOT NULL,created_at BIGINT NOT NULL);
+CREATE INDEX meta_usage_scope ON meta_api_usage(tenant_id,created_at);
+INSERT INTO schema_migrations(version,applied_at) VALUES(6,'2026-11-18T00:00:00+00:00');

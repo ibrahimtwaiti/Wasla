@@ -57,7 +57,8 @@ pg_restore --list restore.dump
 4. طابق SHA256 مع القيمة المسجلة في سجل النسخ؛ افحص مخطط الأرشيف. لا تحتاج فك تشفير age.
 5. بعد ضبط بيئة اتصال الهدف المعزول فقط (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, PGSSLMODE):
 ```bash
-pg_restore --exit-on-error --no-owner --no-acl --dbname="$PGDATABASE" restore.dump
+python -m pip install -r scripts/requirements-restore.txt
+python -m scripts.restore_postgres restore.dump
 ```
 6. تحقق من المخطط والجداول والقيود وعدد السجلات وعزل الشركات وتشغيل التطبيق المعزول. لا تُنفذ رسائل أو webhooks أو Jobs خارجية. سجّل RPO وRTO وزمن الاستعادة.
 7. احذف ملفات الأرشيف المؤقت من بيئة الاستعادة بعد التحقق، واحتفظ بتقرير النتائج لا بكلمة المرور أو بيانات العملاء.

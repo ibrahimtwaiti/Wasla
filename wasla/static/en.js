@@ -1,4 +1,5 @@
 window.WASLA_EN={
+  "وصلة · الإصدار الثاني": "Wasla · V2",
   "جديد": "New",
   "قيد المراجعة": "Under review",
   "يحتاج معلومات": "More information needed",

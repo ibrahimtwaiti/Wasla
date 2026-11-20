@@ -1,0 +1,2 @@
+# PostgreSQL lexer used only by offline backup recovery.
+pglast==8.9

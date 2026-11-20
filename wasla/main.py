@@ -27,14 +27,17 @@ STATIC=Path(__file__).parent/'static'
 REQUEST_STATES={'new','review','information','quoted','accepted','rejected','closed'}
 STAGES={'new','qualified','meeting','proposal','negotiation','won','lost'}
 
+def hosted_https():
+    return os.getenv('WASLA_ENV') in {'staging', 'production'} or os.getenv('VERCEL_ENV') in {'preview', 'production'}
+
 @asynccontextmanager
 async def lifespan(app):
-    if os.getenv('WASLA_ENV')=='production' and not os.getenv('WASLA_ORIGIN','').startswith('https://'):
-        raise RuntimeError('Production requires an explicit HTTPS WASLA_ORIGIN')
+    if hosted_https() and not os.getenv('WASLA_ORIGIN','').startswith('https://'):
+        raise RuntimeError('Hosted deployments require an explicit HTTPS WASLA_ORIGIN')
     initialize()
     yield
 
-app=FastAPI(title='Wasla API',version='2.0.0-rc.3',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Wasla API',version='2.0.0-rc.4',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.middleware('http')
 async def protect(request, call_next):
@@ -52,9 +55,11 @@ async def protect(request, call_next):
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='same-origin'
     response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    if request.url.path=='/app' or request.url.path.startswith('/app/'):
+        response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' https://connect.facebook.net; style-src 'self'; img-src 'self' data: https://www.facebook.com; connect-src 'self' https://www.facebook.com https://graph.facebook.com; frame-src https://www.facebook.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     if request.url.path.startswith('/api/'):
         response.headers['Cache-Control']='no-store'
-    if os.getenv('WASLA_ENV')=='production': response.headers['Strict-Transport-Security']='max-age=31536000'
+    if hosted_https(): response.headers['Strict-Transport-Security']='max-age=31536000'
     return response
 
 @app.exception_handler(psycopg.IntegrityError)
@@ -141,7 +146,7 @@ def valid_date(value):
 @app.get('/api/health')
 def health():
     with transaction() as db: db.execute('SELECT 1')
-    return {'status':'ok','version':'2.0.0-rc.3'}
+    return {'status':'ok','version':app.version}
 
 @app.get('/api/catalog')
 def catalog(lang: str = "ar"):
@@ -239,7 +244,7 @@ def login(data:dict,request:Request,response:Response):
         db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(digest(token),u['id'],csrf,timestamp+SESSION_ABSOLUTE_SECONDS))
         db.execute('INSERT INTO session_activity(token_hash,issued_at,last_seen_at) VALUES(?,?,?)',(digest(token),timestamp,timestamp))
         audit(db,u,'auth.login',u['id'])
-    response.set_cookie('wasla_session',token,max_age=SESSION_ABSOLUTE_SECONDS,httponly=True,secure=os.getenv('WASLA_ENV')=='production',samesite='strict',path='/')
+    response.set_cookie('wasla_session',token,max_age=SESSION_ABSOLUTE_SECONDS,httponly=True,secure=hosted_https(),samesite='strict',path='/')
     return {'ok':True}
 
 @app.get('/api/me')
@@ -362,6 +367,8 @@ def team_create(data:dict,u=Depends(user)):
     permit(u,'team'); name=text(data,'name'); address=email(text(data,'email')); role=choice(data,'role',ROLES)
     password_hash=hash_password(text(data,'password',12,128)); ident=uid()
     with transaction() as db:
+        from .entitlements import capacity
+        capacity(db,u['tenant_id'],'seat')
         db.execute('INSERT INTO users VALUES(?,?,?,?,?,?,1,?)',(ident,u['tenant_id'],address,name,password_hash,role,now())); audit(db,u,'user.created',ident,role)
     return {'id':ident}
 
@@ -370,7 +377,11 @@ def team_update(ident:str,data:dict,u=Depends(user)):
     permit(u,'team'); role=choice(data,'role',ROLES); active=data.get('active') is True
     if ident==u['id']: raise HTTPException(422,'لا يمكنك تعطيل حسابك أو تغيير دورك من هنا')
     with transaction() as db:
+        from .entitlements import capacity
+        from .saas import lock_tenant
+        lock_tenant(db,u['tenant_id'])
         target=scoped(db,'users',ident,u)
+        if active and not target['active']:capacity(db,u['tenant_id'],'seat')
         db.execute('UPDATE users SET role=?,active=? WHERE id=?',(role,int(active),target['id']))
         db.execute('DELETE FROM sessions WHERE user_id=?',(ident,)); audit(db,u,'user.updated',ident,role)
     return {'ok':True}
@@ -549,6 +560,8 @@ def channel_create(data:dict,u=Depends(user)):
     permit(u,'settings'); phone_id=text(data,'phone_id'); ident=uid()
     if not phone_id.isdigit(): raise HTTPException(422,'معرف رقم القناة يجب أن يكون رقميًا')
     with transaction() as db:
+        from .entitlements import capacity
+        capacity(db,u['tenant_id'],'channel','whatsapp')
         db.execute('INSERT INTO channels(id,tenant_id,phone_id,token_env) VALUES(?,?,?,?)',(ident,u['tenant_id'],phone_id,'')); audit(db,u,'channel.registered',ident)
     return {'id':ident,'status':'unverified'}
 
@@ -557,9 +570,8 @@ def drain_webhooks(request:Request):
     secret=os.environ.get('WASLA_WORKER_SECRET','')
     if len(secret)<32 or not hmac.compare_digest(request.headers.get('Authorization',''),'Bearer '+secret):
         raise HTTPException(401,'Unauthorized')
-    from .worker import drain
-    from .service import drain as drain_service
-    return {'processed':drain(max_events=10,max_seconds=5), 'service':drain_service(max_events=10,max_seconds=18)}
+    from .jobs import tick
+    return tick()
 
 @app.get('/api/webhooks/whatsapp')
 def verify_webhook(request:Request):
@@ -594,7 +606,7 @@ def sitemap():
     return Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls+'</urlset>',media_type='application/xml')
 
 from .service_api import router as service_router
-from . import service_oauth, service_media, service_lifecycle, service_channels, provider_console
+from . import service_oauth, service_media, service_lifecycle, service_channels, provider_console, meta_onboarding, meta_lifecycle, saas, meta_pages, email_verification, privacy, meta_data, messenger_metrics, page_posts, api_docs
 app.include_router(service_router)
 
 app.mount('/static' ,StaticFiles(directory=STATIC),name='static')
@@ -607,6 +619,15 @@ def shell(path:str,request:Request):
     if en:
         source=source.replace('lang="ar" dir="rtl"','lang="en" dir="ltr"').replace('وصلة | Wasla','Wasla | Connected sales and teams').replace('جارٍ تحميل وصلة…','Loading Wasla…').replace('انتقل للمحتوى','Skip to content')
     private=path.startswith('app') or path in {'login','setup'}
-    known=path in {'','services','platform','how-it-works','about','faq','pricing','privacy','terms','request','login','setup'} or path.startswith('app/') or path=='app' or path in {'services/'+s['id'] for s in SERVICES}
+    known=path in {'','services','platform','how-it-works','about','faq','pricing','privacy','terms','request','login','setup','signup','verify-email','deletion-status'} or path.startswith('app/') or path=='app' or path in {'services/'+s['id'] for s in SERVICES}
     if private or not known: source=source.replace('</head>','<meta name="robots" content="noindex,nofollow"></head>')
     return HTMLResponse(source,status_code=200 if known else 404,headers={'Cache-Control':'no-store','Vary':'Cookie'})
+
+# Never reflect OAuth codes or registration PINs in Pydantic error payloads.
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+@app.exception_handler(RequestValidationError)
+async def safe_validation(request,exc):
+    if request.url.path.startswith('/api/v2/meta/') or '/meta-data/' in request.url.path or request.url.path.startswith('/api/auth/') or request.url.path.startswith('/api/v2/privacy'):
+        return JSONResponse({'detail':'invalid_meta_request'},status_code=422)
+    return await request_validation_exception_handler(request,exc)

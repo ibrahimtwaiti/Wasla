@@ -1,0 +1,3 @@
+CREATE TABLE meta_page_sessions(state_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES tenants(id),user_id TEXT NOT NULL REFERENCES users(id),session_hash TEXT NOT NULL,app_id TEXT NOT NULL,config_id TEXT NOT NULL,api_version TEXT NOT NULL,expires_at BIGINT NOT NULL,stage TEXT NOT NULL DEFAULT 'started',ciphertext TEXT NOT NULL DEFAULT '',subject_hash TEXT NOT NULL DEFAULT '');
+CREATE TABLE meta_page_connections(account_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,subscription_state TEXT NOT NULL DEFAULT 'pending',connected_at TEXT NOT NULL,FOREIGN KEY(account_id,tenant_id) REFERENCES service_accounts(id,tenant_id));
+INSERT INTO schema_migrations(version,applied_at) VALUES(9,'2026-11-18T00:00:00+00:00');

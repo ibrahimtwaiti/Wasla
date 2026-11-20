@@ -1,5 +1,7 @@
 # Wasla V2 candidate
 
+حالة استكمال التطوير والاختبارات الحالية: [DEVELOPMENT_COMPLETION_AUDIT.md](DEVELOPMENT_COMPLETION_AUDIT.md). [تشغيل التكاملات والبريد والحذف وحدود الشركات](docs/meta/COMPLETION_OPERATIONS_AR.md) و[OpenAPI الفعلي](docs/openapi.json). الأقسام الخاصة بـV1 أدناه تاريخية؛ التفعيل الحي والاعتمادات والتحصيل المالي مراحل مستقلة.
+
 مرشح خدمة العملاء متعدد القنوات قيد التحقق. راجع [تنفيذ الدليل والحدود وبوابات الإطلاق](docs/V2_GUIDE_IMPLEMENTATION_AR.md). لا يعني وجود الموصلات اكتمال الموافقات أو الاختبار الحي.
 
 # Wasla | وصلة — V1
@@ -105,3 +107,11 @@ Prepare a **consistent offline SQLite backup**, not a live database file. Review
 ## إغلاق V1
 
 راجع [تقرير الإغلاق ومصفوفة القبول](docs/V1_CLOSEOUT_AR.md) و[النسخ إلى R2 دون تشفير age والاستعادة](docs/BACKUP_RESTORE_AR.md). وجود ملفات التشغيل لا يعني أن الأسرار والجدولة والوجهة الخارجية قد تم تفعيلها.
+
+## مرشح تجهيز Meta — 18 نوفمبر 2026
+
+إضافة مرحلية فوق V2، مغلقة للاختبار المحدد حتى إعداد Meta والتحقق الحي. ليست اعتماد شراكة أو إطلاق SaaS عام.
+- [التدقيق والبنية وقاعدة البيانات وخطة المراحل](docs/meta/AUDIT_ARCHITECTURE_AR.md)
+- [الجاهزية الرسمية ومصفوفة الخدمات وتدخل المالك](docs/meta/META_READINESS_AR.md)
+- [API وإعداد المعاينة وخطة القبول الحي](docs/meta/API_OPERATIONS_AR.md)
+- [نتائج الاختبارات وحدودها](docs/meta/TESTING_AR.md)

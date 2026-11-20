@@ -46,7 +46,7 @@ class Acceptance(unittest.TestCase):
         r=self.post('/opportunities',{'title':'خدمة','contact_id':cid,'currency':'SAR','value_minor':15000});self.assertEqual(r.status_code,201,r.text);return r.json()['id']
     def seed_conversation(self):
         with transaction() as db:
-            db.execute("INSERT INTO channels(id,tenant_id,phone_id,token_env) VALUES('channel-a','a','12345','')")
+            db.execute("INSERT INTO channels(id,tenant_id,phone_id,token_env,status) VALUES('channel-a','a','12345','','verified')")
         payload={'object':'whatsapp_business_account','entry':[{'changes':[{'value':{'metadata':{'phone_number_id':'12345'},'contacts':[{'wa_id':'966500000003','profile':{'name':'اختبار'}}],'messages':[{'id':'wamid.test','from':'966500000003','timestamp':'1700000000','type':'text','text':{'body':'مرحبًا'}}]}}]}]}
         raw=json.dumps(payload).encode(); signature='sha256='+hmac.new(b'test-webhook-secret',raw,hashlib.sha256).hexdigest()
         r=self.client.post('/api/webhooks/whatsapp',content=raw,headers={'X-Hub-Signature-256':signature,'Content-Type':'application/json'})

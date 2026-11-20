@@ -11,7 +11,7 @@ export default {
     const headers={'authorization':'Bearer '+secret,'content-type':'application/json'};
     if(process.env.VERCEL_AUTOMATION_BYPASS_SECRET)headers['x-vercel-protection-bypass']=process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     try{
-      const result=await fetch(url,{method:'POST',headers,body:'{}',redirect:'error',signal:AbortSignal.timeout(25000)});
+      const result=await fetch(url,{method:'POST',headers,body:'{}',redirect:'error',signal:AbortSignal.timeout(80000)});
       if(!result.ok){console.error('worker status',result.status);return new Response('worker unavailable',{status:502})}
       const data=await result.json();
       console.info('wasla worker tick',JSON.stringify({ok:true,processed:data.processed??0}));

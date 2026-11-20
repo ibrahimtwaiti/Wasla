@@ -13,7 +13,7 @@ import httpx
 from fastapi import HTTPException
 from .db import transaction, one, rows, uid, now, postgres
 
-CHANNELS = {'whatsapp', 'instagram', 'tiktok', 'snapchat'}
+CHANNELS = {'whatsapp', 'instagram', 'tiktok', 'snapchat', 'messenger'}
 STATES = {'new', 'in_progress', 'waiting_customer', 'waiting_internal', 'resolved', 'closed'}
 RANK = {'queued': 0, 'accepted': 1, 'sent': 2, 'failed': 2, 'delivered': 3, 'read': 4}
 DEFAULT_SETTINGS = {'timezone': 'Asia/Riyadh', 'workdays': [0,1,2,3,6], 'start_hour': 9, 'end_hour': 17,
@@ -24,10 +24,10 @@ def settings(db, tid):
     return {**DEFAULT_SETTINGS, **(json.loads(r['settings']) if r else {})}
 
 def capabilities(channel):
-    return {'channel': channel, 'messaging': channel in {'whatsapp','instagram'},
-            'types': ['text','template','image','document'] if channel=='whatsapp' else ['text'] if channel=='instagram' else [],
-            'reply_window_hours': 24 if channel in {'whatsapp','instagram'} else 48 if channel=='tiktok' else None,
-            'delivery_events': channel=='whatsapp', 'media_download': channel in {'whatsapp','instagram'},
+    return {'channel': channel, 'messaging': channel in {'whatsapp','instagram','messenger'},
+            'types': ['text','template','image','document'] if channel=='whatsapp' else ['text'] if channel in {'instagram','messenger'} else [],
+            'reply_window_hours': 24 if channel in {'whatsapp','instagram','messenger'} else 48 if channel=='tiktok' else None,
+            'delivery_events': channel in {'whatsapp','messenger'}, 'media_download': channel in {'whatsapp','instagram'},
             'reason': 'requires_business_messaging_approval_and_provider_contract' if channel=='tiktok' else
             'public_profile_or_referral_only_not_customer_dm' if channel=='snapchat' else 'requires_verified_account'}
 
@@ -36,6 +36,7 @@ def valid_signature(raw, header, secret):
     return bool(secret) and hmac.compare_digest(expected.encode(), header.encode('utf-8'))
 
 def token(account):
+    if account.get('state') in {'disconnected','reauthorize'}: return ''
     # Account mapping is provisioned by an operator, never an arbitrary env name from a tenant.
     if account.get('token_ref','').startswith('vault:'):
         from .service_oauth import read_token
@@ -43,14 +44,27 @@ def token(account):
     return os.getenv('WASLA_CHANNEL_'+account['id'].upper()+'_TOKEN', '')
 
 def provider_request(account, method, suffix='', payload=None):
-    if account['channel'] not in {'whatsapp','instagram'}:
+    if account['channel'] not in {'whatsapp','instagram','messenger'}:
         raise HTTPException(409, 'unsupported_channel')
     credential = token(account)
     if not credential: raise HTTPException(409, 'channel_credentials_missing')
-    host = 'graph.facebook.com' if account['channel']=='whatsapp' else 'graph.instagram.com'
+    host = 'graph.facebook.com' if account['channel'] in {'whatsapp','messenger'} else 'graph.instagram.com'
     url = f"https://{host}/{account['api_version']}/{account['provider_id']}{suffix}"
-    return httpx.request(method, url, headers={'Authorization': 'Bearer '+credential}, json=payload,
+    from .entitlements import consume_api
+    with transaction() as db:consume_api(db,account['tenant_id'])
+    start=time.monotonic();status=0;error=''
+    try:
+        response=httpx.request(method, url, headers={'Authorization': 'Bearer '+credential}, json=payload,
                          timeout=httpx.Timeout(15, connect=5), follow_redirects=False)
+        status=response.status_code
+        if status>=300:error='http_'+str(status)
+        return response
+    except httpx.HTTPError:
+        error='transport_error'
+        raise
+    finally:
+        with transaction() as db:
+            if one(db,'SELECT id FROM tenants WHERE id=?',(account['tenant_id'],)):db.execute('INSERT INTO meta_api_usage VALUES(?,?,?,?,?,?,?)',(uid(),account['tenant_id'],account['channel']+':'+method+(':messages' if suffix=='/messages' else ':asset'),status,error,int((time.monotonic()-start)*1000),int(time.time())))
 
 def normalize(channel, payload):
     """Yield (asset id, semantic key, normalized event); never trust a supplied tenant."""
@@ -66,25 +80,39 @@ def normalize(channel, payload):
                 for status in value.get('statuses', []):
                     yield asset, f"status:{status['id']}:{status['status']}:{status['timestamp']}", {
                         'type':'status','id':str(status['id']),'status':status['status'],'at':int(status['timestamp'])}
-    elif channel=='instagram':
-        if payload.get('object')!='instagram': raise ValueError('wrong_object')
+    elif channel in {'instagram','messenger'}:
+        if payload.get('object')!=('page' if channel=='messenger' else 'instagram'): raise ValueError('wrong_object')
         for entry in payload['entry']:
             asset=str(entry['id'])
             for item in entry.get('messaging', []):
+                if channel=='messenger':
+                    for mid in item.get('delivery',{}).get('mids',[]):
+                        stamp=int(item.get('timestamp',0))//1000
+                        yield asset,'delivered:'+str(mid),{'type':'status','id':str(mid),'status':'delivered','at':stamp}
+                if channel=='messenger' and 'read' in item:
+                    watermark=int(item['read']['watermark']);peer=str(item['sender']['id'])
+                    if watermark<0 or watermark>int(time.time()*1000)+300000 or not peer.isdigit():raise ValueError('invalid_read_receipt')
+                    key='read:'+peer+':'+str(watermark)
+                    yield asset,key,{'type':'read','id':key,'user':peer,'watermark':watermark}
                 msg=item.get('message')
                 if not msg: continue
                 mid=str(msg['mid']); echo=bool(msg.get('is_echo'))
                 yield asset, 'message:'+mid, {'type':'message','id':mid,'user':str(item['recipient' if echo else 'sender']['id']),
                     'at':int(item['timestamp'])//1000,'kind':'text' if 'text' in msg else 'unsupported',
-                    'body':msg.get('text','[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]'),'direction':'out' if echo else 'in', 'media':next(({'url':x.get('payload',{}).get('url','')} for x in msg.get('attachments',[]) if x.get('type')=='image'),None)}
+                    'body':msg.get('text','[مرفق أو نوع غير مدعوم؛ لم يُنزّل الملف]'),'direction':'out' if echo else 'in', 'media':next(({'url':x.get('payload',{}).get('url','')} for x in msg.get('attachments',[]) if channel=='instagram' and x.get('type')=='image'),None)}
     else: raise ValueError('unsupported_channel')
+
+# OAuth completion binds the asset before the optional live messaging check.
+INBOUND_ASSET = """(a.state='verified' OR (a.state='unverified' AND EXISTS
+    (SELECT 1 FROM meta_grants g WHERE g.account_id=a.id AND g.health='valid')))
+    AND (a.expires_at IS NULL OR a.expires_at=0 OR a.expires_at>?)"""
 
 def persist_events(channel, payload):
     events=list(normalize(channel,payload))
     if len(events)>500: raise HTTPException(413,'too_many_events')
     with transaction() as db:
         for asset,key,event in events:
-            account=one(db,"SELECT a.* FROM service_accounts a JOIN tenants t ON t.id=a.tenant_id WHERE a.channel=? AND a.provider_id=? AND t.status!='suspended' AND a.state!='disconnected'",(channel,asset))
+            account=one(db,"SELECT a.* FROM service_accounts a JOIN tenants t ON t.id=a.tenant_id WHERE a.channel=? AND a.provider_id=? AND t.status!='suspended' AND "+INBOUND_ASSET,(channel,asset,int(time.time())))
             if not account: raise HTTPException(403,'unknown_or_disconnected_account')
             if not event['id'] or len(event['id'])>300: raise HTTPException(400,'invalid_message_id')
             db.execute('INSERT INTO service_events(id,account_id,event_key,payload,received_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id,event_key) DO NOTHING',
@@ -116,10 +144,13 @@ def process_event():
             event=one(db,"SELECT * FROM service_events WHERE state='pending' AND next_attempt<=? ORDER BY received_at,id LIMIT 1"+(' FOR UPDATE SKIP LOCKED' if postgres() else ''),(int(time.time()),))
             if not event: return False
             eid=event['id']; attempts=event['attempts']; e=json.loads(event['payload'])
-            a=one(db,"SELECT a.* FROM service_accounts a JOIN tenants t ON t.id=a.tenant_id WHERE a.id=? AND t.status!='suspended' AND a.state!='disconnected'"+(' FOR UPDATE OF a' if postgres() else ''),(event['account_id'],))
+            a=one(db,"SELECT a.* FROM service_accounts a JOIN tenants t ON t.id=a.tenant_id WHERE a.id=? AND t.status!='suspended' AND "+INBOUND_ASSET+(' FOR UPDATE OF a' if postgres() else ''),(event['account_id'],int(time.time())))
             if not a: raise ValueError('account_unavailable')
             aid=a['id']; tid=a['tenant_id']; clock=int(time.time())
             if e['type']=='status': apply_status(db,aid,e['id'],e['status'],e['at'])
+            elif e['type']=='read':
+                from .messenger_metrics import apply_watermark
+                apply_watermark(db,aid,e['user'],e['watermark'])
             elif e['direction']=='out':
                 # Echoes confirm an existing send only; never create a customer or a ticket.
                 apply_status(db,aid,e['id'],'sent',e['at'])
@@ -157,6 +188,14 @@ def process_event():
         return False
 
 def policy(db,a,ticket,payload):
+    if a['channel']=='messenger':
+        from .runtime_configuration import value
+        binding=one(db,'SELECT subscription_state FROM meta_page_connections WHERE account_id=?',(a['id'],))
+        if not binding or binding['subscription_state']!='subscribed':raise HTTPException(409,'page_subscription_required')
+        if value('META_SIGNUP_MODE')!='test' or a['tenant_id'] not in value('META_TEST_TENANTS').split(','):raise HTTPException(409,'meta_test_workspace_required')
+    binding=one(db,'SELECT * FROM meta_connections WHERE account_id=? AND tenant_id=?',(a['id'],a['tenant_id']))
+    if binding and (binding['subscription_state']!='subscribed' or binding['registration_state']!='registered'):
+        raise HTTPException(409,'meta_onboarding_incomplete')
     if not capabilities(a['channel'])['messaging']: raise HTTPException(409,'channel_not_supported_for_customer_messaging')
     if a['state']!='verified': raise HTTPException(409,'channel_requires_connection_check')
     if not token(a): raise HTTPException(409,'channel_credentials_missing')
@@ -225,9 +264,11 @@ def send_outbox():
                     return True
 
         else: body={'recipient':{'id':identity['provider_user_id']},'message':{'text':m['body']}}
+        db.execute('UPDATE service_messages SET occurred_at=? WHERE id=?',(clock,m['id']))
         db.execute("UPDATE service_outbox SET state='sending',claimed_at=?,attempts=attempts+1 WHERE id=?",(clock,o['id']))
     state='unknown'; error='dispatch_outcome_unknown'; pid=None; retry=0; reauth=False
     try:
+        if a['channel']=='messenger':body['messaging_type']='RESPONSE'
         response=provider_request(a,'POST','/messages',body)
         if response.status_code==429:
             state='retry' if o['attempts']<4 else 'dead'; error='rate_limited'
@@ -246,12 +287,17 @@ def send_outbox():
     with transaction() as db:
         db.execute('UPDATE service_outbox SET state=?,error=?,next_attempt=? WHERE id=?',(state,error,int(time.time())+retry+random.randint(0,5),o['id']))
         db.execute('UPDATE service_messages SET status=?,provider_id=? WHERE id=?',(state,pid,m['id']))
-        if reauth: db.execute("UPDATE service_accounts SET state='reauthorize' WHERE id=?",(a['id'],))
+        if reauth: db.execute("UPDATE service_accounts SET state='reauthorize' WHERE id=? AND state!='disconnected'",(a['id'],))
         if pid:
             db.execute('UPDATE service_accounts SET last_outbound_at=? WHERE id=?',(now(),a['id']))
             db.execute('UPDATE service_tickets SET first_human_at=COALESCE(first_human_at,?) WHERE id=?',(int(time.time()),t['id']))
             for event in rows(db,'SELECT * FROM service_status_history WHERE account_id=? AND provider_id=? ORDER BY occurred_at',(a['id'],pid)):
                 apply_status(db,a['id'],pid,event['status'],event['occurred_at'])
+            if a['channel']=='messenger':
+                stamp=one(db,'SELECT watermark_ms FROM meta_read_watermarks WHERE account_id=? AND peer_id=?',(a['id'],identity['provider_user_id']))
+                if stamp:
+                    from .messenger_metrics import apply_watermark
+                    apply_watermark(db,a['id'],identity['provider_user_id'],stamp['watermark_ms'])
     return True
 
 def drain(max_events=20, max_seconds=18):

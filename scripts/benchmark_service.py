@@ -26,9 +26,11 @@ def main():
     from wasla import service
     fixture=Acceptance();fixture.setUp()
     try:
-        fixture.login()
-        r=fixture.client.post('/api/v2/accounts',json={'channel':'whatsapp','provider_id':'benchmark-only','label':'Synthetic benchmark','api_version':'v27.0'})
+        fixture.login('provider')
+        r=fixture.client.post('/api/admin/workspaces/a/integrations',json={'channel':'whatsapp','provider_id':'benchmark-only','label':'Synthetic benchmark','api_version':'v27.0'})
         r.raise_for_status()
+        with transaction() as db:db.execute("UPDATE service_accounts SET state='verified' WHERE id=?",(r.json()['id'],))
+        fixture.login()
         stamp=int(time.time());latencies=[]
         def submit(batch):
             payload={'object':'whatsapp_business_account','entry':[{'changes':[{'value':{'metadata':{'phone_number_id':'benchmark-only'},'messages':batch}}]}]}

@@ -38,7 +38,8 @@ def _pg_row(cursor):
 
 def _pg_sql(sql):
     # SQL is internally authored, never user controlled. Parameters stay bound.
-    sql = sql.replace('?', '%s')
+    # psycopg treats literal percent signs as placeholders even for an empty parameter tuple.
+    sql = sql.replace('%', '%%').replace('?', '%s')
     sql = re.sub(r'\bIS %s\b', 'IS NOT DISTINCT FROM %s', sql)
     sql = sql.replace('max(last_inbound,%s)', 'GREATEST(last_inbound,%s)')
     return sql
@@ -101,6 +102,28 @@ def migrate():
                 for statement in (ROOT / 'migrations/006_provider_console.sql').read_text().split(';'):
                     if statement.strip(): conn.execute(statement)
 
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=6').fetchone() is None:
+                for statement in (ROOT / 'migrations/007_meta_onboarding.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=7').fetchone() is None:
+                for statement in (ROOT / 'migrations/008_meta_lifecycle.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=8').fetchone() is None:
+                for statement in (ROOT / 'migrations/009_saas_sandbox.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=9').fetchone() is None:
+                conn.execute('ALTER TABLE service_accounts DROP CONSTRAINT service_accounts_channel_check')
+                conn.execute("ALTER TABLE service_accounts ADD CONSTRAINT service_accounts_channel_check CHECK(channel IN ('whatsapp','instagram','tiktok','snapchat','messenger'))")
+                for statement in (ROOT / 'migrations/010_facebook_pages.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+
+            if conn.execute('SELECT version FROM schema_migrations WHERE version=10').fetchone() is None:
+                for statement in (ROOT / 'migrations/011_completion.sql').read_text().split(';'):
+                    if statement.strip(): conn.execute(statement)
+
 def initialize():
     if postgres():
         with transaction() as db:
@@ -114,6 +137,16 @@ def initialize():
                 raise RuntimeError('V2 completion migration missing: python -m wasla.cli init')
             if not one(db, 'SELECT version FROM schema_migrations WHERE version=5'):
                 raise RuntimeError('Provider console migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=6'):
+                raise RuntimeError('Meta onboarding migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=7'):
+                raise RuntimeError('Meta lifecycle migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=8'):
+                raise RuntimeError('SaaS migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=9'):
+                raise RuntimeError('Facebook Pages migration missing: python -m wasla.cli init')
+            if not one(db, 'SELECT version FROM schema_migrations WHERE version=10'):
+                raise RuntimeError('Completion migration missing: python -m wasla.cli init')
         return
     Path(path()).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path()) as db:
@@ -131,7 +164,33 @@ def initialize():
             db.executescript((ROOT / "migrations/005_service_completion.sql").read_text())
         if not db.execute("SELECT version FROM schema_migrations WHERE version=5").fetchone():
             db.executescript((ROOT / "migrations/006_provider_console.sql").read_text())
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=6").fetchone():
+            db.executescript((ROOT / "migrations/007_meta_onboarding.sql").read_text())
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=7").fetchone():
+            db.executescript((ROOT / "migrations/008_meta_lifecycle.sql").read_text())
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=8").fetchone():
+            db.executescript((ROOT / "migrations/009_saas_sandbox.sql").read_text())
         db.commit()
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=9").fetchone():
+            # SQLite requires rebuilding a CHECK constraint. Foreign keys are off on
+            # this migration-only connection; parent name and all keys are preserved.
+            ddl=db.execute("SELECT sql FROM sqlite_master WHERE name='service_accounts'").fetchone()[0]
+            ddl=ddl.replace('CREATE TABLE service_accounts(', 'CREATE TABLE service_accounts_new(').replace("'tiktok','snapchat'", "'tiktok','snapchat','messenger'")
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute(ddl)
+                db.execute('INSERT INTO service_accounts_new SELECT * FROM service_accounts')
+                db.execute('DROP TABLE service_accounts')
+                db.execute('ALTER TABLE service_accounts_new RENAME TO service_accounts')
+                for statement in (ROOT / 'migrations/010_facebook_pages.sql').read_text().split(';'):
+                    if statement.strip():db.execute(statement)
+                if db.execute('PRAGMA foreign_key_check').fetchone():raise RuntimeError('Foreign key validation failed')
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        if not db.execute("SELECT version FROM schema_migrations WHERE version=10").fetchone():
+            db.executescript('BEGIN IMMEDIATE;'+(ROOT / 'migrations/011_completion.sql').read_text()+'COMMIT;')
 
 def audit(db, user, action, entity, detail=''):
     db.execute('INSERT INTO audit VALUES(?,?,?,?,?,?,?)',

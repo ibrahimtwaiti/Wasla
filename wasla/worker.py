@@ -18,7 +18,7 @@ def process_one():
             for entry in payload['entry']:
                 for change in entry.get('changes',[]):
                     v=change.get('value',{}); pid=v.get('metadata',{}).get('phone_number_id')
-                    channel=one(db,"SELECT c.* FROM channels c JOIN tenants t ON c.tenant_id=t.id WHERE c.phone_id=? AND t.status!='suspended'",(pid,))
+                    channel=one(db,"SELECT c.* FROM channels c JOIN tenants t ON c.tenant_id=t.id WHERE c.phone_id=? AND c.status='verified' AND t.status!='suspended'",(pid,))
                     if not channel: raise ValueError('unknown_or_suspended_channel')
                     tid=channel['tenant_id']; names={c['wa_id']:c.get('profile',{}).get('name','عميل واتساب') for c in v.get('contacts',[])}
                     for msg in v.get('messages',[]):
@@ -60,5 +60,6 @@ def drain(max_events=20,max_seconds=20):
 
 if __name__=='__main__':
     initialize()
+    from .jobs import tick
     while True:
-        if not process_one(): time.sleep(2)
+        if not tick()['processed']:time.sleep(2)

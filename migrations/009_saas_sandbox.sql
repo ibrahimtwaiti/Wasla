@@ -1,0 +1,6 @@
+CREATE TABLE service_plans(id TEXT PRIMARY KEY,name TEXT NOT NULL,currency TEXT NOT NULL,monthly_amount_minor BIGINT NOT NULL CHECK(monthly_amount_minor>=0),message_limit BIGINT NOT NULL CHECK(message_limit>=0),active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL);
+CREATE TABLE service_subscriptions(tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),plan_id TEXT NOT NULL REFERENCES service_plans(id),snapshot TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('trial','paused')),updated_at TEXT NOT NULL);
+CREATE TABLE service_usage_counters(tenant_id TEXT NOT NULL REFERENCES tenants(id),period TEXT NOT NULL,metric TEXT NOT NULL,used BIGINT NOT NULL DEFAULT 0 CHECK(used>=0),PRIMARY KEY(tenant_id,period,metric));
+CREATE TABLE service_sandbox_invoices(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL REFERENCES tenants(id),period TEXT NOT NULL,snapshot TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(tenant_id,period));
+CREATE TABLE service_registrations(tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),user_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved')),terms_version TEXT NOT NULL,review_evidence TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);
+INSERT INTO schema_migrations(version,applied_at) VALUES(8,'2026-11-18T00:00:00+00:00');

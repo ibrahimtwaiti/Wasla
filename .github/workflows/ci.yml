@@ -16,12 +16,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r scripts/requirements-restore.txt
       - run: python -m compileall -q wasla scripts
       - run: node --check wasla/static/app.js
       - run: node --check wasla/static/service.js
       - run: node --check wasla/static/provider-console.js
       - run: node --check wasla/static/service-oauth.js
+      - run: node --check wasla/static/completion.js
+      - run: node --check wasla/static/meta-data.js
+      - run: node --check wasla/static/commerce.js
+      - run: node --check wasla/static/meta-integrations.js
       - run: python -m unittest discover -s tests -v
       - name: Synthetic V2 load and duplicate-delivery integrity
         run: python -m scripts.benchmark_service --messages 1000 --workers 4 --output /tmp/wasla-v2-benchmark.json
@@ -50,7 +54,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r scripts/requirements-restore.txt
       - name: Migrations, PostgreSQL acceptance, isolation and concurrent worker
         env:
           DATABASE_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
@@ -62,13 +66,28 @@ jobs:
 
       - name: Restore V2 backup into a disposable database and compare every row
         env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
           PGPASSWORD: ci-disposable-only
           WASLA_TEST_DATABASE_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_test
           WASLA_RESTORE_TEST_URL: postgresql://wasla_test:ci-disposable-only@localhost:5432/wasla_restore_test
         run: |
           psql -h localhost -U wasla_test -d wasla_test -c 'CREATE DATABASE wasla_restore_test;'
           docker exec ${{ job.services.postgres.id }} pg_dump -U wasla_test -d wasla_test -Fc > /tmp/wasla-ci-restore.dump
-          docker exec -i ${{ job.services.postgres.id }} pg_restore -U wasla_test -d wasla_restore_test --no-owner < /tmp/wasla-ci-restore.dump
+          # Extract with the same client major as the source, execute with the runner's psql.
+          docker cp /tmp/wasla-ci-restore.dump "$PG_CONTAINER":/tmp/wasla-ci-restore.dump
+          mkdir -p "$RUNNER_TEMP/restore-bin"
+          cat >"$RUNNER_TEMP/restore-bin/pg_restore" <<'SH'
+          #!/bin/sh
+          exec docker exec "$PG_CONTAINER" pg_restore "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/restore-bin/pg_restore"
+          export PATH="$RUNNER_TEMP/restore-bin:$PATH" PGHOST=127.0.0.1 PGUSER=wasla_test PGDATABASE=wasla_restore_test
+          python -m scripts.restore_postgres /tmp/wasla-ci-restore.dump
+          python -m scripts.verify_restore
+          if python -m scripts.restore_postgres /tmp/wasla-ci-restore.dump; then
+            echo 'Restore accepted an occupied target' >&2
+            exit 1
+          fi
           python -m scripts.verify_restore
 
       - name: Exercise atomic SQLite to PostgreSQL import
@@ -95,6 +114,11 @@ jobs:
 
   browser:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      # Match package-lock.json; browsers and OS dependencies are preinstalled.
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -104,11 +128,14 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt
       - run: npm ci
       - run: node scripts/i18n/check.cjs
       - run: node --test tests/test_worker_trigger.cjs
-      - run: npx playwright install --with-deps chromium firefox webkit
+      - name: Verify pinned browser executables
+        run: node -e "const fs=require('node:fs');for(const name of ['chromium','firefox','webkit']){if(!fs.existsSync(require('playwright')[name].executablePath()))throw new Error(name+' browser missing; align image with package-lock.json');}"
+      - name: Align isolated container home ownership for Firefox
+        run: chown "$(id -u):$(id -g)" /github/home
       - run: npx playwright test
       - uses: actions/upload-artifact@v4
         if: always()

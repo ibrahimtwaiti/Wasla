@@ -18,9 +18,10 @@ class ServiceV2(unittest.TestCase):
     login=baseline.Acceptance.login
 
     def account(self,channel='whatsapp',asset='12345'):
-        self.login()
-        r=self.client.post('/api/v2/accounts',json={'channel':channel,'provider_id':asset,'label':'Test account','api_version':'v27.0'})
+        self.login('provider')
+        r=self.client.post('/api/admin/workspaces/a/integrations',json={'channel':channel,'provider_id':asset,'label':'Test account','api_version':'v27.0'})
         self.assertEqual(r.status_code,201,r.text); aid=r.json()['id']
+        self.login()
         os.environ['WASLA_CHANNEL_'+aid.upper()+'_TOKEN']='synthetic-test-only'
         with transaction() as db: db.execute("UPDATE service_accounts SET state='verified' WHERE id=?",(aid,))
         return aid
@@ -130,7 +131,7 @@ class ServiceV2(unittest.TestCase):
         self.login('reader-a');self.assertEqual(self.client.get('/api/v2/tickets').status_code,403)
 
     def test_instagram_scoped_identity_and_echo(self):
-        aid=self.account('instagram','ig1');payload={'object':'instagram','entry':[{'id':'ig1','messaging':[{'sender':{'id':'person1'},'recipient':{'id':'ig1'},'timestamp':int(time.time()*1000),'message':{'mid':'igmsg1','text':'hello'}}]}]}
+        aid=self.account('instagram','123001');payload={'object':'instagram','entry':[{'id':'123001','messaging':[{'sender':{'id':'person1'},'recipient':{'id':'123001'},'timestamp':int(time.time()*1000),'message':{'mid':'igmsg1','text':'hello'}}]}]}
         s.persist_events('instagram',payload);self.assertTrue(s.process_event())
         msg=payload['entry'][0]['messaging'][0];msg['message']={'mid':'echo1','text':'our reply','is_echo':True};msg['recipient']['id']='person1'
         s.persist_events('instagram',payload);self.assertTrue(s.process_event())
@@ -180,7 +181,7 @@ class ServiceV2(unittest.TestCase):
     def oauth_setup(self):
         from cryptography.fernet import Fernet
         os.environ.update(INSTAGRAM_APP_ID='synthetic-app',INSTAGRAM_APP_SECRET='synthetic-secret',WASLA_TOKEN_ENCRYPTION_KEY=Fernet.generate_key().decode())
-        aid=self.account('instagram','ig1')
+        aid=self.account('instagram','123001')
         # Keep Origin for the test client; configure HTTPS only while starting OAuth.
         with patch('wasla.service_oauth.redirect_uri',return_value='https://test.example/api/v2/oauth/instagram/callback'):
             r=self.client.post('/api/v2/accounts/'+aid+'/oauth/start',json={})
@@ -208,7 +209,7 @@ class ServiceV2(unittest.TestCase):
     def test_oauth_stores_only_encrypted_token(self):
         aid,state=self.oauth_setup()
         request=httpx.Request('POST','https://api.instagram.com/oauth/access_token')
-        short=httpx.Response(200,json={'access_token':'short-token','user_id':'ig1','permissions':list({'instagram_business_basic','instagram_business_manage_messages'})},request=request)
+        short=httpx.Response(200,json={'access_token':'short-token','user_id':'123001','permissions':list({'instagram_business_basic','instagram_business_manage_messages'})},request=request)
         long=httpx.Response(200,json={'access_token':'long-test-token','expires_in':5184000},request=request)
         with patch('wasla.service_oauth.httpx.post',return_value=short),patch('wasla.service_oauth.httpx.get',return_value=long),patch('wasla.service_oauth.redirect_uri',return_value='https://test.example/api/v2/oauth/instagram/callback'):
             r=self.client.post('/api/v2/oauth/instagram/complete',json={'state':state,'code':'one-time-code'})
@@ -221,7 +222,7 @@ class ServiceV2(unittest.TestCase):
         with transaction() as db:self.assertIsNone(one(db,'SELECT * FROM service_secrets'))
 
     def test_oauth_account_mismatch_cannot_replace_token(self):
-        aid,state=self.oauth_setup();response=httpx.Response(200,json={'user_id':'someone-else','access_token':'secret'},request=httpx.Request('POST','https://api.instagram.com/oauth/access_token'))
+        aid,state=self.oauth_setup();response=httpx.Response(200,json={'user_id':'123002','access_token':'secret'},request=httpx.Request('POST','https://api.instagram.com/oauth/access_token'))
         with patch('wasla.service_oauth.httpx.post',return_value=response),patch('wasla.service_oauth.redirect_uri',return_value='https://test.example/api/v2/oauth/instagram/callback'):
             r=self.client.post('/api/v2/oauth/instagram/complete',json={'state':state,'code':'test'})
         self.assertEqual(r.status_code,409)
